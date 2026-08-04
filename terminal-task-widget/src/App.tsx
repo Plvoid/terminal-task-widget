@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { getCurrentWindow, LogicalSize, LogicalPosition, PhysicalPosition, currentMonitor, primaryMonitor } from "@tauri-apps/api/window";
 import "./App.css";
 import { register, unregister, isRegistered } from '@tauri-apps/plugin-global-shortcut';
@@ -305,6 +305,58 @@ const sameSel = (a: Sel, b: Sel): boolean => {
 const selOfRow = (r: Row): Sel =>
   r.kind === 'backlog' ? { kind: 'backlog', index: r.index } : { kind: 'task', path: r.path };
 
+// --- Id-anchored selection -------------------------------------------------
+// `Sel` above is the POSITIONAL form every consumer reads: a path into the
+// tree, or a backlog index. It is no longer what is STORED. A stored position
+// does not merely go stale when its node moves — it silently re-points at
+// whatever slid into that slot, so an undo, a reorder, or the backlog `[ x ]`
+// pill could leave the highlight on row 3 while the next keystroke acted on
+// the node that used to be there. Same failure mode already fixed for the edit
+// and sub-entry targets; this is that same treatment for the selection.
+//
+// So: state holds an id (`SelRef`), and the positional `Sel` is DERIVED from
+// the live tree on every render. Node gone == resolves to null, which is the
+// only staleness case left and the one every consumer already handles
+// (`rowIndexOf` → −1, `nodeAt` → null, `applyMove` bounds-checks).
+// `kind` picks the list the id resolves against: 'backlog' in `backlog`,
+// 'task' in the task tree. Ids are unique WITHIN each list (normalizeTree /
+// normalizeFlat dedupe per list), never necessarily across the two — which is
+// exactly why the kind has to be carried, not inferred.
+type SelRef =
+  | { kind: 'task'; id: string }
+  | { kind: 'backlog'; id: string }
+  | null;
+
+const resolveSel = (r: SelRef, tasks: Task[], backlog: Task[]): Sel => {
+  if (!r) return null;
+  if (r.kind === 'backlog') {
+    const index = backlog.findIndex(t => t.id === r.id);
+    return index < 0 ? null : { kind: 'backlog', index };
+  }
+  const path = findPathById(tasks, r.id);
+  return path ? { kind: 'task', path } : null;
+};
+
+// The inverse, applied at set time — when the caller's position is still valid
+// by construction (it was just computed against the tree it is being resolved
+// against). Callers that set a selection right after a mutation MUST have
+// dispatched first: `dispatch` updates `tasksRef`/`backlogRef` synchronously,
+// so the post-mutation path they hand in resolves against the post-mutation
+// tree. A position that does not address a node stores as null rather than
+// being kept around as a wrong answer.
+const selRefOf = (s: Sel, tasks: Task[], backlog: Task[]): SelRef => {
+  if (!s) return null;
+  if (s.kind === 'backlog') {
+    const t = backlog[s.index];
+    return t ? { kind: 'backlog', id: t.id } : null;
+  }
+  const node = nodeAt(tasks, s.path);
+  return node ? { kind: 'task', id: node.id } : null;
+};
+
+const sameSelRef = (a: SelRef, b: SelRef): boolean =>
+  !a || !b ? a === b : a.kind === b.kind && a.id === b.id;
+
 // -1 when nothing is selected OR the selection has gone stale (the row it
 // pointed at no longer exists) — callers treat both the same way.
 const rowIndexOf = (rows: Row[], s: Sel): number => {
@@ -469,8 +521,10 @@ export default function App() {
   const [hotkey, setHotkey] = useState<string>(() => localStorage.getItem('geek-hotkey') || 'Alt+X');
   // null = not yet read, or the platform refused the query (portable exe, locked-down box)
   const [autostartOn, setAutostartOn] = useState<boolean | null>(null);
-  // Single path-based selection replacing the old index/subIndex/backlogIndex trio.
-  const [sel, setSel] = useState<Sel>(null);
+  // Single selection replacing the old index/subIndex/backlogIndex trio.
+  // Stored by id (see SelRef); the positional `sel` every consumer reads is
+  // derived from the live tree further down, once the ref mirrors exist.
+  const [selRef, setSelRef] = useState<SelRef>(null);
   // Id-anchored for the same reason: `kind` picks which list the id resolves
   // against — 'backlog' resolves in `backlog`, 'task' in the task tree.
   const [editingNode, setEditingNode] = useState<{ kind: 'task' | 'backlog'; id: string } | null>(null);
@@ -540,6 +594,38 @@ export default function App() {
   backlogRef.current = backlog;
   const dailyRef = useRef(dailyTemplates);
   dailyRef.current = dailyTemplates;
+
+  // The positional selection, re-derived from the live tree every render, so a
+  // mutation anywhere re-addresses it instead of leaving it on a slot that now
+  // belongs to someone else. Everything downstream still reads `sel.path` /
+  // `sel.index` exactly as before — only the storage changed.
+  //
+  // Identity is deliberately stabilised: a fresh object on every task mutation
+  // would re-fire the scroll effect below and call scrollIntoView under a
+  // stationary cursor on every commit — the class of bug `mouseNavEnabled`
+  // exists to prevent. Same node in the same place == same object.
+  const selCache = useRef<Sel>(null);
+  const sel = useMemo(() => {
+    const next = resolveSel(selRef, tasks, backlog);
+    if (sameSel(selCache.current, next)) return selCache.current;
+    selCache.current = next;
+    return next;
+  }, [selRef, tasks, backlog]);
+
+  // Positional in, id out. Accepts the updater form, whose `prev` is resolved
+  // through the ref mirrors so a setter running after a same-tick dispatch sees
+  // the post-dispatch world (invariant #7's contract, applied to selection).
+  // Returning the previous ref unchanged when nothing moved keeps `setSel(prev
+  // => same)` a true no-op — hoverSelect leans on that.
+  const setSel = useCallback((next: Sel | ((prev: Sel) => Sel)) => {
+    setSelRef(prev => {
+      const t = tasksRef.current;
+      const b = backlogRef.current;
+      const value = typeof next === 'function' ? next(resolveSel(prev, t, b)) : next;
+      const nextRef = selRefOf(value, t, b);
+      return sameSelRef(prev, nextRef) ? prev : nextRef;
+    });
+  }, []);
 
   // The last completion toggle made by a mouse click, so the dblclick that may
   // follow it can undo exactly that toggle and nothing else. `snapshot` is the
@@ -2437,7 +2523,18 @@ export default function App() {
                     <span
                       className="cursor-pointer hover:text-red-400 transition-colors"
                       title="Delete"
-                      onClick={(e) => { e.stopPropagation(); dispatch({ backlog: backlogRef.current.filter((_, i) => i !== idx) }); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Land the selection the way the keyboard twin
+                        // (Backspace on a backlog row) does: the slot the
+                        // deleted item vacated, else the one above, else
+                        // nothing. Id-anchoring already prevents the old
+                        // wrong-row highlight; this is the missing parity.
+                        dispatch({ backlog: backlogRef.current.filter((_, i) => i !== idx) });
+                        const maxIdx = backlogRef.current.length - 1;
+                        const at = idx > maxIdx ? maxIdx : idx;
+                        setSel(at >= 0 ? { kind: 'backlog', index: at } : null);
+                      }}
                     >[ x ]</span>
                   </div>
                   </div>
