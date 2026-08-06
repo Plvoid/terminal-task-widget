@@ -442,6 +442,45 @@ const COMMANDS = [
 
 const STATE_FILE = 'state.json';
 
+// --- What a day's archive is made of ---------------------------------------
+// The rollover used to archive `saved.filter(t => t.completed)` — TOP-LEVEL
+// completed tasks only. Completion is derived upward, so a parent stays
+// incomplete while any child is: finish six subtasks under one unfinished
+// parent and the day archived nothing at all. No LOG entry, and
+// `exportDailyLog` was never even called, so no `.md` file was written.
+//
+// The two consumers want different shapes, so build both:
+//
+// `completedLeaves` — the flat list the LOG tab and weekStats read. They render
+// one `[x] text` line per element and use `.length` as the day's score, so
+// LEAVES are the honest unit: a completed parent of four counted as 1 before,
+// against a progress bar that counts leaves (countLeaves below). Same unit now.
+const completedLeaves = (tasks: Task[]): Task[] => {
+  const out: Task[] = [];
+  const walk = (arr: Task[]) => {
+    for (const t of arr) {
+      const kids = t.subtasks ?? [];
+      if (kids.length > 0) walk(kids);
+      else if (t.completed) out.push(t);
+    }
+  };
+  walk(tasks);
+  return out;
+};
+
+// `completedTree` — the same work with its shape intact, for the markdown
+// export, whose emitter is already recursive. Prunes to nodes that are
+// completed or have a completed descendant, so a finished child under an
+// unfinished parent still appears, nested under it, instead of vanishing.
+const completedTree = (tasks: Task[]): Task[] => {
+  const out: Task[] = [];
+  for (const t of tasks) {
+    const kids = completedTree(t.subtasks ?? []);
+    if (t.completed || kids.length > 0) out.push({ ...t, subtasks: kids });
+  }
+  return out;
+};
+
 function countLeaves(tasks: Task[]): { total: number; completed: number } {
   let total = 0;
   let completed = 0;
@@ -1054,13 +1093,17 @@ export default function App() {
         const saved = normalizeTree(JSON.parse(localStorage.getItem('geek-tasks') || '[]')).tasks;
         const savedBacklog = normalizeFlat(JSON.parse(localStorage.getItem('geek_backlog') || '[]'));
 
-        const completedTasks = saved.filter((t: Task) => t.completed);
-        if (completedTasks.length > 0) {
+        // Leaves for the archive entry (flat, what LOG renders and counts),
+        // the pruned tree for the markdown (hierarchy, recursive emitter).
+        // Gate on the leaves: they are what "did anything get done today"
+        // actually means. See completedLeaves / completedTree.
+        const doneLeaves = completedLeaves(saved);
+        if (doneLeaves.length > 0) {
           const existing = JSON.parse(localStorage.getItem('geek-archive') || '[]');
-          const newArchive = [...existing, { date: lastActiveDate, tasks: completedTasks }];
+          const newArchive = [...existing, { date: lastActiveDate, tasks: doneLeaves }];
           setArchiveLogs(newArchive);
           localStorage.setItem('geek-archive', JSON.stringify(newArchive));
-          exportDailyLog(lastActiveDate, completedTasks, savedBacklog);
+          exportDailyLog(lastActiveDate, completedTree(saved), savedBacklog);
         }
 
         // Carry over what is still open, at every depth (completion is derived,

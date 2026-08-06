@@ -73,12 +73,12 @@ No cloud, no account, no telemetry.
 ## Repository layout
 
 ```
-Tasks_Track_Widget/
+<repo-root>/
 ├── README.md                  # this file
 ├── PROJECT_SUMMARY.md         # architecture notes & design decisions
 ├── USER_GUIDE.md / .pdf       # end-user manual
 └── terminal-task-widget/
-    ├── src/App.tsx            # ~2150 lines: virtually all app logic
+    ├── src/App.tsx            # ~2850 lines: virtually all app logic
     ├── src/App.css            # animations & theme
     ├── src-tauri/src/lib.rs   # tray, plugins, Rust entry
     └── src-tauri/tauri.conf.json
