@@ -2473,12 +2473,28 @@ export default function App() {
                 <React.Fragment key={idx}>
                 <div
                   ref={setRowRef(`b-${idx}`)}
-                  className={`relative flex items-start text-sm py-1 group w-full transition-all duration-150 ${
+                  // Selection here used to be a lone `bg-gray-800/40` — the same
+                  // gray a selected task gets, at HALF the alpha, with no accent
+                  // border and no shadow, sitting on the dimmest base text in the
+                  // app. Three cues versus one, and the one at half strength.
+                  // It now carries the theme-colored left rule that makes
+                  // top-level task selection legible. The "a left border reads as
+                  // another ancestry rule" objection is about NESTED rows; the
+                  // backlog is flat, so it does not apply.
+                  //
+                  // Every layout-affecting class is CONSTANT — the border sits
+                  // there transparent when unselected and `px-1 -mx-1` cancels
+                  // out — so the state swap is pure color and can never reflow
+                  // (invariant #8). `rounded-r` only: rounding the left corner
+                  // would clip the accent rule.
+                  className={`relative flex items-start text-sm py-1 group w-full transition-all duration-150 rounded-r px-1 -mx-1 border-l-2 ${
                     pmGhost?.parentPath === 'backlog' && pmGhost.from === idx
-                      ? 'opacity-50 rounded px-1 -mx-1'
+                      ? 'opacity-50 border-transparent'
                       : flashRowKey === `b-${idx}`
-                      ? 'bg-cyan-950/50 rounded px-1 -mx-1'
-                      : sel?.kind === 'backlog' && sel.index === idx ? 'bg-gray-800/40 rounded px-1 -mx-1' : ''
+                      ? 'bg-cyan-950/50 border-cyan-400'
+                      : sel?.kind === 'backlog' && sel.index === idx
+                      ? 'bg-gray-800/80 border-[var(--theme-color)]'
+                      : 'border-transparent'
                   }`}
                   onMouseEnter={() => hoverSelect({ kind: 'backlog', index: idx })}
                 >
@@ -2491,7 +2507,15 @@ export default function App() {
                       [ {'>'} ]
                     </span>
                     <span
-                      className="min-w-0 break-words text-gray-500 group-hover:text-gray-300 transition-colors"
+                      // `group-hover` is pure CSS and knows nothing about `sel`,
+                      // so arrowing onto a backlog row used to brighten nothing —
+                      // the mouse got fill AND brighter text, the keyboard got
+                      // only the fill. Selection now brightens it explicitly.
+                      className={`min-w-0 break-words transition-colors ${
+                        sel?.kind === 'backlog' && sel.index === idx
+                          ? 'text-gray-300'
+                          : 'text-gray-500 group-hover:text-gray-300'
+                      }`}
                       onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); setInputValue(task.text); setEditingNode({ kind: 'backlog', id: task.id }); inputRef.current?.focus(); }}
                     >
                       {task.text}
