@@ -428,7 +428,7 @@ function normalizeShortcut(key: string): string {
 let shortcutTaskQueue = Promise.resolve();
 
 const COMMANDS = [
-  { cmd: '/deadline', usage: '/deadline <HH:MM>', desc: "Today's deadline (one-time, clears at day end)" },
+  { cmd: '/deadline', usage: '/deadline <HH:MM|off>', desc: "Today's deadline (one-time, clears at day end)" },
   { cmd: '/l', usage: '/l <Text>', desc: 'Add to backlog (bare /l jumps there)' },
   { cmd: '/clear', usage: '/clear', desc: 'Clear all tasks (Ctrl+Z to undo)' },
   { cmd: '/shortcut', usage: '/shortcut', desc: 'Rebind hotkey (bare Enter = reset Alt+X)' },
@@ -503,22 +503,36 @@ function asciiProgress(percent: number, width = 10): string {
   return `PROG: [${"█".repeat(filled)}${"░".repeat(empty)}] ${percent}%`;
 }
 
+// The resting identity color, and the one every no-deadline path must land on.
+const THEME_REST = 'hsl(142, 70%, 45%)';
+
 function useDeadlineColor(deadlineStr: string) {
-  const [color, setColor] = useState('hsl(142, 70%, 45%)');
+  const [color, setColor] = useState(THEME_REST);
 
   useEffect(() => {
     const update = () => {
       const now = new Date();
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
+      // No deadline (the default, and what `/deadline off` produces) used to
+      // fall straight through: ''.split(':').map(Number) is [0], so `dm` is
+      // undefined, deadlineMinutes is NaN, both comparisons below are false,
+      // and the ramp branch emitted `hsl(NaN, 70%, NaN%)` — invalid CSS.
+      // Every `var(--theme-color)` then resolved to an invalid value: text fell
+      // back to the inherited `:root { color: #00ff00 }` (a harsher neon green
+      // that reads as roughly right, which is why this went unnoticed), while
+      // the `color-mix()` borders and glows became invalid declarations and
+      // were dropped outright — no panel border, no ball glow.
       const [dh, dm] = deadlineStr.split(':').map(Number);
+      if (!isFinite(dh) || !isFinite(dm)) { setColor(THEME_REST); return; }
+
       const deadlineMinutes = dh * 60 + dm;
       const startMinutes = deadlineMinutes - 120;
 
       if (nowMinutes >= deadlineMinutes) {
         setColor('hsl(0, 70%, 50%)');
       } else if (nowMinutes <= startMinutes) {
-        setColor('hsl(142, 70%, 45%)');
+        setColor(THEME_REST);
       } else {
         const progress = (nowMinutes - startMinutes) / 120;
         const hue = Math.round(142 - progress * 142);
@@ -1100,7 +1114,16 @@ export default function App() {
         const doneLeaves = completedLeaves(saved);
         if (doneLeaves.length > 0) {
           const existing = JSON.parse(localStorage.getItem('geek-archive') || '[]');
-          const newArchive = [...existing, { date: lastActiveDate, tasks: doneLeaves }];
+          // Replace an entry for this date rather than appending a second one.
+          // The LOG tab and weekStats both iterate ENTRIES, not dates, so a
+          // duplicate showed the day twice and double-counted it in the 7-day
+          // total. Reachable whenever `geek-last-date` goes backwards — the
+          // disaster-recovery restore rewrites it from the disk mirror.
+          const entry = { date: lastActiveDate, tasks: doneLeaves };
+          const at = existing.findIndex((e: any) => e?.date === lastActiveDate);
+          const newArchive = at >= 0
+            ? existing.map((e: any, i: number) => (i === at ? entry : e))
+            : [...existing, entry];
           setArchiveLogs(newArchive);
           localStorage.setItem('geek-archive', JSON.stringify(newArchive));
           exportDailyLog(lastActiveDate, completedTree(saved), savedBacklog);
@@ -2061,9 +2084,29 @@ export default function App() {
         return;
       }
 
-      if (text.startsWith('/deadline ')) {
-        const newTime = text.split(' ')[1];
-        if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(newTime)) setDeadline(newTime);
+      // Bare `/deadline` is matched too: without it the trailing-space test
+      // failed and the word fell through to the task-capture path, adding a
+      // task literally named "/deadline". Malformed input used to be swallowed
+      // in silence — it now says so, since a mistyped deadline is invisible
+      // until the glow fails to ramp hours later.
+      if (text === '/deadline' || text.startsWith('/deadline ')) {
+        const arg = text.slice('/deadline'.length).trim().toLowerCase();
+        if (arg === '') {
+          postNotice(deadline
+            ? `[..] deadline ${deadline} · /deadline off clears it`
+            : '[..] no deadline · /deadline HH:MM sets one');
+        } else if (arg === 'off' || arg === 'clear' || arg === 'none') {
+          // Clearing before rollover is the whole point: the ramp is a 2h
+          // pressure signal, and a deadline that has passed leaves the entire
+          // UI red until midnight with no way to call the day done.
+          if (deadline) { setDeadline(''); postNotice('[OK] deadline cleared'); }
+          else postNotice('[..] no deadline set');
+        } else if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(arg)) {
+          setDeadline(arg);
+          postNotice(`[OK] deadline ${arg}`);
+        } else {
+          postNotice('[ERR] use /deadline HH:MM or /deadline off');
+        }
         setInputValue('');
         setShowHint(false);
         return;
@@ -2858,7 +2901,7 @@ export default function App() {
                     <div className="space-y-3 text-gray-400">
                       <div>
                         <span className="text-[var(--theme-color)] font-bold">TERMINAL TASK</span>
-                        <span className="text-gray-600"> v0.2.0</span>
+                        <span className="text-gray-600"> v{__APP_VERSION__}</span>
                       </div>
                       <div className="grid grid-cols-[80px_minmax(0,1fr)] gap-x-2 gap-y-1.5 break-words">
                         <div className="text-gray-300 font-bold">Hotkey</div>
