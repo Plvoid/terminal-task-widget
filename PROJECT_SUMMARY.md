@@ -3,11 +3,11 @@
 ## Background & Environment
 
 - **Project**: `<repo-root>/terminal-task-widget` — Windows desktop floating-ball task widget, Matrix/terminal aesthetic (dark, glowing mono text, JetBrains Mono).
-- **Stack**: Tauri 2 (Rust 2.11.1) + React 19 + TypeScript 5.8 + Vite 7 + Tailwind CSS 4. Single-page app, virtually all logic in **`src/App.tsx`** (~2500 lines / ~125 KB); styles in `src/App.css`; Rust in `src-tauri/src/lib.rs`.
+- **Stack**: Tauri 2 (Rust 2.11.1) + React 19 + TypeScript 5.8 + Vite 7 + Tailwind CSS 4. Single-page app, virtually all logic in **`src/App.tsx`** (~2990 lines / ~139 KB); styles in `src/App.css`; Rust in `src-tauri/src/lib.rs`.
 - **Window model**: one frameless, transparent, always-on-top window. Collapsed = 60×60 "ball" docked at right edge (y = 38.2% of the work area); expanded = 400×600 panel. Starts hidden 60×60 (`tauri.conf.json`) and shows after JS positions it.
 - **Plugins**: `tauri-plugin-fs`, `global-shortcut`, `opener`, `autostart` (desktop-only, `#[cfg(desktop)]`). Capabilities in `src-tauri/capabilities/default.json` (fs scoped to `$DOCUMENT/**`).
 - **Build**: `cd terminal-task-widget` first — `package.json` is in the app subfolder, not the repo root. `npm run tauri dev`; release `npm run tauri build` → installer in `src-tauri\target\release\bundle\`. Type-check: `npx tsc --noEmit`.
-- **Version**: 0.2.0, synced in package.json / tauri.conf.json / Cargo.toml / About-tab string (still a hardcoded string in App.tsx).
+- **Version**: 0.2.0. The About tab now reads it from `package.json` via a Vite `define` (`__APP_VERSION__`, declared in `src/vite-env.d.ts`) — no longer hardcoded in App.tsx. `tauri.conf.json` and `Cargo.toml` still carry their own copies; that one keys the installer upgrade path, so keep them in step when releasing.
 - **Docs**: `USER_GUIDE.md` is the end-user manual — keep it in sync with UX changes.
 
 ## Goal
