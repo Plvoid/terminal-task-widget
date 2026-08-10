@@ -429,6 +429,7 @@ let shortcutTaskQueue = Promise.resolve();
 
 const COMMANDS = [
   { cmd: '/deadline', usage: '/deadline <HH:MM|off>', desc: "Today's deadline (one-time, clears at day end)" },
+  { cmd: '/theme', usage: '/theme <name|ramp on|ramp off>', desc: 'Colour preset · bare /theme lists them' },
   { cmd: '/l', usage: '/l <Text>', desc: 'Add to backlog (bare /l jumps there)' },
   { cmd: '/clear', usage: '/clear', desc: 'Clear all tasks (Ctrl+Z to undo)' },
   { cmd: '/shortcut', usage: '/shortcut', desc: 'Rebind hotkey (bare Enter = reset Alt+X)' },
@@ -520,21 +521,96 @@ const THEME_REST = 'hsl(142, 70%, 45%)';
 // Multiple stops per role, not derived: `-wash` is a dark fill BEHIND body
 // text while `-soft` is a highlight ON TOP of one, and no color-mix formula
 // reproduces Tailwind's stops exactly. A preset supplies all eight.
-const ACCENTS = {
-  '--accent-action':      'oklch(78.9% 0.154 211.53)',   // was [var(--accent-action)]
-  '--accent-action-soft': 'oklch(86.5% 0.127 207.078)',  // was [var(--accent-action-soft)]
-  '--accent-action-deep': 'oklch(71.5% 0.143 215.221)',  // was [var(--accent-action-deep)]
-  '--accent-action-wash': 'oklch(30.2% 0.056 229.695)',  // was [var(--accent-action-wash)]
-  '--accent-edit':        'oklch(85.2% 0.199 91.936)',   // was [var(--accent-edit)]
-  '--accent-edit-dim':    'oklch(68.1% 0.162 75.834)',   // was [var(--accent-edit-dim)]
-  '--accent-danger':      'oklch(70.4% 0.191 22.216)',   // was [var(--accent-danger)]
-  '--accent-affirm':      'oklch(79.2% 0.209 151.711)',  // was [var(--accent-affirm)]
-} as const;
+type Accents = Record<string, string>;
 
-function useDeadlineColor(deadlineStr: string) {
-  const [color, setColor] = useState(THEME_REST);
+// A ramp is two HSL triples, lerped componentwise across the last 2h. Storing
+// components rather than finished color strings is what lets a preset ramp
+// between ANY two colors instead of only 142 → 0.
+type Ramp = { from: [number, number, number]; to: [number, number, number] };
+
+type Preset = {
+  theme: string;      // resting identity, used whenever the ramp is not driving
+  ramp: Ramp | null;  // null = this preset never ramps
+  accents: Accents;
+};
+
+// `default` MUST stay pixel-identical to the pre-theme app — these are the
+// exact values Tailwind was emitting, read out of the built CSS. Its `affirm`
+// equals its identity hue (142): the one grandfathered contrast violation, kept
+// because fidelity beats the rule for the preset nobody opted into. Every OTHER
+// preset obeys — each accent ≥40° from the resting identity, ≥30° from the
+// other accents.
+const PRESETS: Record<string, Preset> = {
+  default: {
+    theme: THEME_REST,
+    ramp: { from: [142, 70, 45], to: [0, 70, 50] },
+    accents: {
+      '--accent-action':      'oklch(78.9% 0.154 211.53)',   // was cyan-400
+      '--accent-action-soft': 'oklch(86.5% 0.127 207.078)',  // was cyan-300
+      '--accent-action-deep': 'oklch(71.5% 0.143 215.221)',  // was cyan-500
+      '--accent-action-wash': 'oklch(30.2% 0.056 229.695)',  // was cyan-950
+      '--accent-edit':        'oklch(85.2% 0.199 91.936)',   // was yellow-400
+      '--accent-edit-dim':    'oklch(68.1% 0.162 75.834)',   // was yellow-600
+      '--accent-danger':      'oklch(70.4% 0.191 22.216)',   // was red-400
+      '--accent-affirm':      'oklch(79.2% 0.209 151.711)',  // was green-400
+    },
+  },
+  // Zero saturation, so the accents carry every bit of the meaning alone.
+  // `ramp: null` deliberately — this is the preset for people who do not run
+  // deadlines, and a grey identity lurching to red would be incoherent.
+  mono: {
+    theme: 'hsl(0, 0%, 82%)',
+    ramp: null,
+    accents: {
+      '--accent-action':      'hsl(187, 70%, 55%)',
+      '--accent-action-soft': 'hsl(187, 75%, 70%)',
+      '--accent-action-deep': 'hsl(187, 70%, 45%)',
+      '--accent-action-wash': 'hsl(190, 60%, 14%)',
+      '--accent-edit':        'hsl(54, 80%, 55%)',
+      '--accent-edit-dim':    'hsl(45, 70%, 45%)',
+      '--accent-danger':      'hsl(0, 75%, 65%)',
+      '--accent-affirm':      'hsl(142, 60%, 55%)',
+    },
+  },
+  // The preset that justifies per-preset accents at all. Its identity sits at
+  // 200°, 13° from the stock cyan action accent — move-feedback would vanish
+  // into its own chrome — so action moves to VIOLET here and only here. No
+  // single hue knob could have prevented that.
+  ice: {
+    theme: 'hsl(200, 80%, 60%)',
+    ramp: { from: [200, 80, 60], to: [0, 75, 60] },
+    accents: {
+      '--accent-action':      'hsl(280, 65%, 70%)',
+      '--accent-action-soft': 'hsl(280, 70%, 80%)',
+      '--accent-action-deep': 'hsl(280, 60%, 60%)',
+      '--accent-action-wash': 'hsl(280, 50%, 16%)',
+      '--accent-edit':        'hsl(54, 80%, 55%)',
+      '--accent-edit-dim':    'hsl(45, 70%, 45%)',
+      '--accent-danger':      'hsl(0, 75%, 65%)',
+      '--accent-affirm':      'hsl(142, 60%, 55%)',
+    },
+  },
+};
+
+const PRESET_NAMES = Object.keys(PRESETS);
+// Unknown name resolves to `default` in silence: someone who downgrades and
+// re-upgrades, or hand-edits localStorage, must not meet an error on launch.
+const presetOf = (name: string): Preset => PRESETS[name] ?? PRESETS.default;
+
+function useDeadlineColor(deadlineStr: string, preset: Preset, rampOn: boolean) {
+  const [color, setColor] = useState(preset.theme);
+  // The ramp is identified by its endpoints, not by object identity: PRESETS is
+  // module-level and never re-created, but depending on `preset` directly would
+  // still re-run this effect on every render if a preset were ever built inline.
+  const ramp = rampOn ? preset.ramp : null;
+  const rampKey = ramp ? `${ramp.from.join()}|${ramp.to.join()}` : '';
+  const rest = preset.theme;
 
   useEffect(() => {
+    // No ramp for this preset, or the user switched it off: the identity color
+    // is simply constant. Nothing to tick, so no interval either.
+    if (!ramp) { setColor(rest); return; }
+
     const update = () => {
       const now = new Date();
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
@@ -549,27 +625,31 @@ function useDeadlineColor(deadlineStr: string) {
       // the `color-mix()` borders and glows became invalid declarations and
       // were dropped outright — no panel border, no ball glow.
       const [dh, dm] = deadlineStr.split(':').map(Number);
-      if (!isFinite(dh) || !isFinite(dm)) { setColor(THEME_REST); return; }
+      if (!isFinite(dh) || !isFinite(dm)) { setColor(rest); return; }
 
       const deadlineMinutes = dh * 60 + dm;
       const startMinutes = deadlineMinutes - 120;
+      const [h0, s0, l0] = ramp.from;
+      const [h1, s1, l1] = ramp.to;
+      const at = (p: number) =>
+        `hsl(${Math.round(h0 + (h1 - h0) * p)}, ${Math.round(s0 + (s1 - s0) * p)}%, ${Math.round(l0 + (l1 - l0) * p)}%)`;
 
       if (nowMinutes >= deadlineMinutes) {
-        setColor('hsl(0, 70%, 50%)');
+        setColor(at(1));
       } else if (nowMinutes <= startMinutes) {
-        setColor(THEME_REST);
+        // The far end of the ramp, NOT `rest`: a preset may legitimately rest
+        // somewhere other than where its ramp begins.
+        setColor(at(0));
       } else {
-        const progress = (nowMinutes - startMinutes) / 120;
-        const hue = Math.round(142 - progress * 142);
-        const lightness = Math.round(45 + progress * 5);
-        setColor(`hsl(${hue}, 70%, ${lightness}%)`);
+        setColor(at((nowMinutes - startMinutes) / 120));
       }
     };
 
     update();
     const id = setInterval(update, 60000);
     return () => clearInterval(id);
-  }, [deadlineStr]);
+    // `ramp` is re-derived each render, so it is keyed by value — see rampKey.
+  }, [deadlineStr, rampKey, rest]);
 
   return color;
 }
@@ -596,6 +676,11 @@ export default function App() {
   const stateSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [deadline, setDeadline] = useState<string>(() => localStorage.getItem('geek-deadline') || '');
+  // Presentation only. Neither of these may ever reach `dispatch` — a theme
+  // change must not cost an undo step (spec §8.6). Persisted separately so
+  // switching preset cannot silently re-enable a ramp the user turned off.
+  const [themeName, setThemeName] = useState<string>(() => localStorage.getItem('geek-theme') || 'default');
+  const [rampOn, setRampOn] = useState<boolean>(() => localStorage.getItem('geek-ramp') !== 'off');
   const [hotkey, setHotkey] = useState<string>(() => localStorage.getItem('geek-hotkey') || 'Alt+X');
   // null = not yet read, or the platform refused the query (portable exe, locked-down box)
   const [autostartOn, setAutostartOn] = useState<boolean | null>(null);
@@ -636,7 +721,8 @@ export default function App() {
   const isFirstRender = useRef(true);
   // Every visible row in visual order — the single source of truth for ↑/↓.
   const rows = useMemo(() => flattenVisible(tasks, backlog), [tasks, backlog]);
-  const themeColor = useDeadlineColor(deadline);
+  const preset = presetOf(themeName);
+  const themeColor = useDeadlineColor(deadline, preset, rampOn);
   isRecordingRef.current = isRecordingShortcut;
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -1264,13 +1350,16 @@ export default function App() {
     localStorage.setItem('geek-tasks', JSON.stringify(tasks));
     localStorage.setItem('geek-hotkey', hotkey);
     localStorage.setItem('geek-deadline', deadline);
+    localStorage.setItem('geek-theme', themeName);
+    // Only written when OFF, so absent means on — a fresh profile keeps the ramp.
+    if (rampOn) localStorage.removeItem('geek-ramp'); else localStorage.setItem('geek-ramp', 'off');
     localStorage.setItem('geek-archive', JSON.stringify(_archiveLogs));
     localStorage.setItem('geek_backlog', JSON.stringify(backlog));
     localStorage.setItem('geek-daily', JSON.stringify(dailyTemplates));
     // Debounced disk mirror — localStorage alone dies with the WebView cache
     if (stateSaveTimer.current) clearTimeout(stateSaveTimer.current);
     stateSaveTimer.current = setTimeout(() => { writeStateFile(); }, 800);
-  }, [tasks, hotkey, deadline, _archiveLogs, backlog, dailyTemplates]);
+  }, [tasks, hotkey, deadline, _archiveLogs, backlog, dailyTemplates, themeName, rampOn]);
 
   // Minute tick for the deadline countdown
   useEffect(() => {
@@ -2109,6 +2198,33 @@ export default function App() {
         return;
       }
 
+      // Themes are command-driven because invariant #1 forbids adding any
+      // focusable element to the panel — a clickable picker in the help modal
+      // would take focus off the command input. Nothing here dispatches, so a
+      // theme change costs no undo step (spec §8.6).
+      if (text === '/theme' || text.startsWith('/theme ')) {
+        const arg = text.slice('/theme'.length).trim().toLowerCase();
+        if (arg === '') {
+          postNotice(`[..] ${PRESET_NAMES.map(n => (n === themeName ? `*${n}` : n)).join(' · ')} · ramp ${rampOn ? 'on' : 'off'}`);
+        } else if (arg === 'ramp off' || arg === 'ramp on') {
+          const on = arg.endsWith('on');
+          // Say so even when the ACTIVE preset has no ramp of its own —
+          // otherwise `/theme ramp on` under `mono` looks like it did nothing.
+          setRampOn(on);
+          postNotice(on
+            ? (preset.ramp ? '[OK] deadline ramp on' : '[OK] ramp on · this preset has none')
+            : '[OK] deadline ramp off');
+        } else if (PRESETS[arg]) {
+          setThemeName(arg);
+          postNotice(`[OK] theme ${arg}`);
+        } else {
+          postNotice(`[ERR] unknown theme · ${PRESET_NAMES.join(' · ')}`);
+        }
+        setInputValue('');
+        setShowHint(false);
+        return;
+      }
+
       // Bare `/deadline` is matched too: without it the trailing-space test
       // failed and the word fell through to the task-capture path, adding a
       // task literally named "/deadline". Malformed input used to be swallowed
@@ -2491,7 +2607,7 @@ export default function App() {
   };
 
   return (
-    <div className="w-screen h-screen bg-transparent font-mono text-sm" style={{ '--theme-color': themeColor, ...ACCENTS } as React.CSSProperties}>
+    <div className="w-screen h-screen bg-transparent font-mono text-sm" style={{ '--theme-color': themeColor, ...preset.accents } as React.CSSProperties}>
       {!isExpanded ? (
         <div className="w-[60px] h-[60px] bg-transparent flex items-center justify-center animate-ball-in">
           <div
@@ -2943,7 +3059,7 @@ export default function App() {
                           : autostartOn
                           ? <>Launches at login <span className="text-gray-600">(default) — /startup off to disable</span></>
                           : <>Does not launch at login <span className="text-gray-600">— /startup on to enable</span></>}</div>
-                        <div className="text-gray-300 font-bold">Theme</div><div>Glow shifts green → red over the 2h before the deadline</div>
+                        <div className="text-gray-300 font-bold">Theme</div><div>/theme {PRESET_NAMES.join(' · ')} · glow ramps over the 2h before the deadline (/theme ramp off)</div>
                       </div>
                     </div>
                   )}

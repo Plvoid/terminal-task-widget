@@ -183,15 +183,22 @@ commit between each, then a fresh read-only agent audits the whole diff.
    rename, apart from the fallback caveat in §8.3. Also confirms `caret-[var(…)]` and
    `placeholder-[var(…)]` compile, which was the real risk: an unsupported utility is
    dropped silently rather than erroring.
-2. **Preset table + resolution.** Add the `Preset` type, the table, and preset lookup.
-   Still no UI; `default` stays active.
-3. **Ramp parameterisation.** `useDeadlineColor` takes endpoints from the active preset;
-   handle `ramp: null` and the off switch.
-4. **Commands + persistence.** `/theme`, `/theme <name>`, `/theme ramp off|on`,
-   localStorage, `COMMANDS` entries.
+2. ~~**Preset table + resolution.**~~ **DONE.** `PRESETS` holds `default`, `mono`, `ice`;
+   `presetOf()` falls back to `default` silently on an unknown name.
+3. ~~**Ramp parameterisation.**~~ **DONE.** A `Ramp` is two HSL triples lerped
+   componentwise, so a preset can ramp between any two colors rather than only 142 → 0.
+   `ramp: null` short-circuits before the interval is even armed. Verified numerically
+   against the old hardcoded expression: both endpoints and p = 0.25/0.5/0.75 are
+   identical strings, so `default`'s ramp is unchanged.
+4. ~~**Commands + persistence.**~~ **DONE.** `/theme`, `/theme <name>`,
+   `/theme ramp on|off`, `localStorage`, `COMMANDS` entry, help-modal line.
 5. **Audit.** Fresh read-only agent against §8 below and `PLAN_wave3_nesting.md` §1.
+   **Still outstanding.**
 
-Step 1 is the whole risk. Steps 2-4 are mechanical once it lands.
+Step 1 was the whole risk, as expected. One thing worth recording: because every preset
+value lives in a JS inline style rather than a class, steps 2-4 produced **zero** change to
+the built CSS — the same rule-set diff as step 1. That is a useful property, not a
+coincidence: adding a preset can never alter what Tailwind emits.
 
 ## 8. Invariants this wave must not break
 
