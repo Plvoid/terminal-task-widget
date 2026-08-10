@@ -174,10 +174,15 @@ command only:
 `App.tsx` is one ~2600-line file. Agents collide on it, so: sequential only, `tsc` and a
 commit between each, then a fresh read-only agent audits the whole diff.
 
-1. **Variables without behaviour.** Define the five vars on the root div, hardcoded to
-   today's exact values. Replace all 33 literal accent classes with `var(...)` reads.
-   Move the four help-modal section headers from affirm to theme. **Zero visible change** —
-   this step is verified by the app looking identical, nothing else.
+1. ~~**Variables without behaviour.**~~ **DONE 2026-08-06.** Eight vars in the `ACCENTS`
+   const, spread onto the root div beside `--theme-color`; all 39 literal accent classes
+   now read `[var(--accent-*)]`; the four help-modal section headers moved from affirm to
+   theme. Verified **mechanically, not by eye**: built the pre-change and post-change CSS,
+   substituted the new var names back to Tailwind's (`--accent-action` → `--color-cyan-400`
+   etc.), and diffed the rule sets. Every base rule has an exact counterpart — a pure
+   rename, apart from the fallback caveat in §8.3. Also confirms `caret-[var(…)]` and
+   `placeholder-[var(…)]` compile, which was the real risk: an unsupported utility is
+   dropped silently rather than erroring.
 2. **Preset table + resolution.** Add the `Preset` type, the table, and preset lookup.
    Still no UI; `default` stays active.
 3. **Ramp parameterisation.** `useDeadlineColor` takes endpoints from the active preset;
@@ -195,10 +200,22 @@ Everything in `PLAN_wave3_nesting.md` §1 still binds. Additionally:
 1. **No focusable element** may be added — §5 exists to satisfy this.
 2. **`default` is pixel-identical to today.** The step-1 commit is the checkpoint for this;
    if anything shifts, stop and fix before step 2.
-3. **Opacity modifiers.** Tailwind's `/70` slash syntax on an *arbitrary* value
-   (`text-[var(--x)]/70`) is not reliable across versions. Use explicit
-   `color-mix(in srgb, var(--x) 70%, transparent)`, which the codebase already does for the
-   theme-color glows (~2389, 2404, 2633). Do not assume the slash form compiles.
+3. ~~**Opacity modifiers** — do not assume the slash form compiles.~~ **Tested 2026-08-06:
+   it does.** Tailwind 4 compiles `text-[var(--x)]/70` to
+   `color-mix(in oklab, var(--x) 70%, transparent)`, which is byte-for-byte what
+   `text-cyan-400/70` already produced. Keep the slash form; it is far less error-prone
+   than hand-written `color-mix`.
+
+   **But it costs the no-color-mix fallback.** Tailwind emits every alpha utility twice: a
+   plain rule with the alpha pre-baked into a hex, then an `@supports (color:color-mix(…))`
+   block that overrides it. With a literal color it can compute that hex
+   (`.bg-cyan-950/30 → #0533454d`); with a `var()` it cannot, so the fallback degrades to
+   the **fully opaque** color and only the `@supports` block carries the transparency.
+   Every browser that supports `color-mix` — Chromium 111+, so every WebView2 that can run
+   this app — renders identically. Anything older would draw the washes opaque. This is an
+   accepted trade, recorded so nobody re-derives it: **the app now has a hard floor of
+   WebView2 ≥ 111.** Do not "fix" the fallback by inlining hexes; that would defeat theming
+   entirely.
 4. **`cyan-950` is a wash, not an accent.** It must become a `color-mix` against `#000`
    (`--accent-action-wash`), not a lightness variant of the accent — the four `cyan-950`
    sites are backgrounds behind body text and their contrast is load-bearing.

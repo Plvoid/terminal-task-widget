@@ -506,6 +506,31 @@ function asciiProgress(percent: number, width = 10): string {
 // The resting identity color, and the one every no-deadline path must land on.
 const THEME_REST = 'hsl(142, 70%, 45%)';
 
+// --- Accent roles (Wave 2 step 1 — PLAN_wave2_themes.md §2) -----------------
+// The four semantic accent roles, lifted out of the ~35 hardcoded Tailwind
+// classes that used to spell them. NOTHING is themeable yet: these are the
+// exact values Tailwind was already emitting, copied out of the built CSS, so
+// this step is required to be pixel-identical. Presets land in step 2.
+//
+// Names are semantic, never chromatic — a preset may legitimately make
+// `--accent-action` violet (the `ice` preset does exactly that, because its
+// identity hue sits 13° from cyan), and a variable called `--cyan` would then
+// be a lie.
+//
+// Multiple stops per role, not derived: `-wash` is a dark fill BEHIND body
+// text while `-soft` is a highlight ON TOP of one, and no color-mix formula
+// reproduces Tailwind's stops exactly. A preset supplies all eight.
+const ACCENTS = {
+  '--accent-action':      'oklch(78.9% 0.154 211.53)',   // was [var(--accent-action)]
+  '--accent-action-soft': 'oklch(86.5% 0.127 207.078)',  // was [var(--accent-action-soft)]
+  '--accent-action-deep': 'oklch(71.5% 0.143 215.221)',  // was [var(--accent-action-deep)]
+  '--accent-action-wash': 'oklch(30.2% 0.056 229.695)',  // was [var(--accent-action-wash)]
+  '--accent-edit':        'oklch(85.2% 0.199 91.936)',   // was [var(--accent-edit)]
+  '--accent-edit-dim':    'oklch(68.1% 0.162 75.834)',   // was [var(--accent-edit-dim)]
+  '--accent-danger':      'oklch(70.4% 0.191 22.216)',   // was [var(--accent-danger)]
+  '--accent-affirm':      'oklch(79.2% 0.209 151.711)',  // was [var(--accent-affirm)]
+} as const;
+
 function useDeadlineColor(deadlineStr: string) {
   const [color, setColor] = useState(THEME_REST);
 
@@ -2264,18 +2289,18 @@ export default function App() {
           // Tall source → condensed block: one dashed-bordered line standing in
           // for a row too big to preview literally.
           <div
-            className="border-l-2 border-dashed border-cyan-400/70 bg-cyan-950/60 backdrop-blur-[2px] text-cyan-300/80 px-3 py-0.5 rounded-sm truncate animate-modal-in"
+            className="border-l-2 border-dashed border-[var(--accent-action)]/70 bg-[var(--accent-action-wash)]/60 backdrop-blur-[2px] text-[var(--accent-action-soft)]/80 px-3 py-0.5 rounded-sm truncate animate-modal-in"
             style={{ marginLeft: depth * 16 }}
           >
             ⇥ {src.text}
-            {subCount > 0 && <span className="text-cyan-500/80"> ·{subCount} sub</span>}
+            {subCount > 0 && <span className="text-[var(--accent-action-deep)]/80"> ·{subCount} sub</span>}
           </div>
         ) : (
           // Short source → a full-height ghost would blanket both neighbors, so
           // draw a thin insertion rule with a small label chip instead.
           <div className="flex items-center gap-2 animate-modal-in" style={{ marginLeft: depth * 16 }}>
-            <span className="text-[10px] leading-tight text-cyan-300/90 bg-cyan-950/80 backdrop-blur-[2px] px-1.5 rounded-sm truncate max-w-[70%] shrink-0">⇥ {src.text}</span>
-            <div className="flex-1 border-t border-dashed border-cyan-400/70" />
+            <span className="text-[10px] leading-tight text-[var(--accent-action-soft)]/90 bg-[var(--accent-action-wash)]/80 backdrop-blur-[2px] px-1.5 rounded-sm truncate max-w-[70%] shrink-0">⇥ {src.text}</span>
+            <div className="flex-1 border-t border-dashed border-[var(--accent-action)]/70" />
           </div>
         )}
       </div>
@@ -2306,11 +2331,11 @@ export default function App() {
     const outerClass = depth === 0
       ? `px-3 py-2 transition-all duration-150 ${
           isMoveSource
-            ? 'opacity-50 border-l-2 border-dashed border-cyan-400/40'
+            ? 'opacity-50 border-l-2 border-dashed border-[var(--accent-action)]/40'
             : isFlash
-            ? 'bg-cyan-950/50 border-l-2 border-cyan-400'
+            ? 'bg-[var(--accent-action-wash)]/50 border-l-2 border-[var(--accent-action)]'
             : isSubTarget
-            ? 'bg-cyan-950/30 border-l-2 border-cyan-400/70'
+            ? 'bg-[var(--accent-action-wash)]/30 border-l-2 border-[var(--accent-action)]/70'
             : isSel
             ? 'bg-gray-800/80 shadow-md border-l-2 border-[var(--theme-color)]'
             : 'border-l-2 border-transparent hover:bg-gray-900/40'
@@ -2322,9 +2347,9 @@ export default function App() {
       : isMoveSource
       ? 'opacity-50 rounded px-1 -mx-1'
       : isFlash
-      ? 'bg-cyan-950/60 rounded px-1 -mx-1'
+      ? 'bg-[var(--accent-action-wash)]/60 rounded px-1 -mx-1'
       : isSubTarget
-      ? 'bg-cyan-950/30 rounded px-1 -mx-1'
+      ? 'bg-[var(--accent-action-wash)]/30 rounded px-1 -mx-1'
       : isSel
       ? 'bg-gray-700/50 rounded px-1 -mx-1'
       : '';
@@ -2386,7 +2411,7 @@ export default function App() {
           >
             <span
               className={`mr-2 shrink-0 select-none font-mono ${
-                depth === 0 ? 'opacity-90' : 'cursor-pointer hover:text-green-400 transition-colors'
+                depth === 0 ? 'opacity-90' : 'cursor-pointer hover:text-[var(--accent-affirm)] transition-colors'
               }`}
               onClick={depth === 0 ? undefined : (e) => handleTaskClick(e, path)}
             >
@@ -2424,7 +2449,7 @@ export default function App() {
             >[ v ]</span>
             {canAddChild && (
               <span
-                className="mr-2 cursor-pointer hover:text-cyan-400 transition-colors"
+                className="mr-2 cursor-pointer hover:text-[var(--accent-action)] transition-colors"
                 title="Add children (or press > on selection)"
                 onClick={(e) => { e.stopPropagation(); openSubEntry(path); inputRef.current?.focus(); }}
               >[ + ]</span>
@@ -2444,7 +2469,7 @@ export default function App() {
               >[ « ]</span>
             )}
             <span
-              className="cursor-pointer hover:text-red-400 transition-colors"
+              className="cursor-pointer hover:text-[var(--accent-danger)] transition-colors"
               title="Delete"
               onClick={(e) => { e.stopPropagation(); deleteNode(path); inputRef.current?.focus(); }}
             >[ x ]</span>
@@ -2452,7 +2477,7 @@ export default function App() {
           </div>
         </div>
         {isSubTarget && (
-          <div className="ml-2 pl-2 mt-1 text-xs text-cyan-400/80 font-mono select-none animate-modal-in">
+          <div className="ml-2 pl-2 mt-1 text-xs text-[var(--accent-action)]/80 font-mono select-none animate-modal-in">
             └─ typing below adds here · Enter chains · Esc done
           </div>
         )}
@@ -2466,7 +2491,7 @@ export default function App() {
   };
 
   return (
-    <div className="w-screen h-screen bg-transparent font-mono text-sm" style={{ '--theme-color': themeColor } as React.CSSProperties}>
+    <div className="w-screen h-screen bg-transparent font-mono text-sm" style={{ '--theme-color': themeColor, ...ACCENTS } as React.CSSProperties}>
       {!isExpanded ? (
         <div className="w-[60px] h-[60px] bg-transparent flex items-center justify-center animate-ball-in">
           <div
@@ -2511,7 +2536,7 @@ export default function App() {
           <div className="px-4 py-2 shrink-0 text-[var(--theme-color)] flex items-center justify-between gap-2">
             <span className="shrink-0">{asciiProgress(percent)}</span>
             {notice && (
-              <span className={`text-[11px] truncate animate-modal-in ${notice.startsWith('[ERR]') ? 'text-red-400/90' : 'text-cyan-400/90'}`}>
+              <span className={`text-[11px] truncate animate-modal-in ${notice.startsWith('[ERR]') ? 'text-[var(--accent-danger)]/90' : 'text-[var(--accent-action)]/90'}`}>
                 {notice}
               </span>
             )}
@@ -2535,21 +2560,21 @@ export default function App() {
                 {(() => {
                   const aging = backlog.filter(t => t.createdAt !== undefined && ageDays(t.createdAt) >= 14).length;
                   return aging > 0
-                    ? <span className="text-yellow-600/80 truncate">{aging} aging — promote or prune</span>
+                    ? <span className="text-[var(--accent-edit-dim)]/80 truncate">{aging} aging — promote or prune</span>
                     : null;
                 })()}
               </div>
               {showSurface && (
                 <div className="flex items-center gap-2 text-xs font-mono mb-2 text-gray-500 select-none animate-modal-in">
-                  <span className="text-cyan-500/80 shrink-0">⌁ consider today?</span>
+                  <span className="text-[var(--accent-action-deep)]/80 shrink-0">⌁ consider today?</span>
                   <span className="truncate text-gray-400 min-w-0">{backlog[surfaceIdx]?.text}</span>
                   <span
-                    className="cursor-pointer hover:text-green-400 shrink-0"
+                    className="cursor-pointer hover:text-[var(--accent-affirm)] shrink-0"
                     title="Promote to today's tasks"
                     onClick={(e) => { promoteBacklogTask(e, surfaceIdx); skipSurface(); }}
                   >[ {'>'} ]</span>
                   <span
-                    className="cursor-pointer hover:text-red-400 shrink-0"
+                    className="cursor-pointer hover:text-[var(--accent-danger)] shrink-0"
                     title="Not today — ask again tomorrow"
                     onClick={(e) => { e.stopPropagation(); skipSurface(); }}
                   >[ x ]</span>
@@ -2577,7 +2602,7 @@ export default function App() {
                     pmGhost?.parentPath === 'backlog' && pmGhost.from === idx
                       ? 'opacity-50 border-transparent'
                       : flashRowKey === `b-${idx}`
-                      ? 'bg-cyan-950/50 border-cyan-400'
+                      ? 'bg-[var(--accent-action-wash)]/50 border-[var(--accent-action)]'
                       : sel?.kind === 'backlog' && sel.index === idx
                       ? 'bg-gray-800/80 border-[var(--theme-color)]'
                       : 'border-transparent'
@@ -2586,7 +2611,7 @@ export default function App() {
                 >
                   <div className="flex items-start min-w-0 flex-1">
                     <span
-                      className="text-gray-600 mr-2 cursor-pointer hover:text-green-400 transition-colors font-mono shrink-0"
+                      className="text-gray-600 mr-2 cursor-pointer hover:text-[var(--accent-affirm)] transition-colors font-mono shrink-0"
                       onClick={(e) => promoteBacklogTask(e, idx)}
                       title="Promote to active tasks"
                     >
@@ -2609,7 +2634,7 @@ export default function App() {
                     {task.createdAt !== undefined && ageDays(task.createdAt) >= 1 && (
                       <span
                         className={`ml-2 shrink-0 text-[10px] self-center ${
-                          ageDays(task.createdAt) >= 14 ? 'text-yellow-600/80' : 'text-gray-600'
+                          ageDays(task.createdAt) >= 14 ? 'text-[var(--accent-edit-dim)]/80' : 'text-gray-600'
                         }`}
                         title={`In backlog for ${ageDays(task.createdAt)} days`}
                       >
@@ -2631,7 +2656,7 @@ export default function App() {
                       onClick={(e) => { e.stopPropagation(); nudgeRow('backlog', idx, 1); }}
                     >[ v ]</span>
                     <span
-                      className="cursor-pointer hover:text-red-400 transition-colors"
+                      className="cursor-pointer hover:text-[var(--accent-danger)] transition-colors"
                       title="Delete"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -2686,7 +2711,7 @@ export default function App() {
               </div>
             )}
             <span className={`mr-2 font-bold transition-colors duration-300 shrink-0 ${
-              editingNode ? 'text-yellow-400' : subEntryTarget !== null ? 'text-cyan-400' : 'text-[var(--theme-color)]'
+              editingNode ? 'text-[var(--accent-edit)]' : subEntryTarget !== null ? 'text-[var(--accent-action)]' : 'text-[var(--theme-color)]'
             }`}>
               {/* The label shows the target's live PATH (`sub#2.1>`), resolved
                   from its id — so it renumbers itself when rows above move. */}
@@ -2720,7 +2745,7 @@ export default function App() {
                   blurTimeoutRef.current = setTimeout(() => setIsTyping(false), 150);
                 }}
                 className={`w-full bg-transparent text-gray-200 focus:outline-none placeholder:opacity-30 ${
-                  editingNode ? 'caret-yellow-400 placeholder-yellow-400' : subEntryTarget !== null ? 'caret-cyan-400 placeholder-cyan-400' : 'caret-[var(--theme-color)] placeholder-[var(--theme-color)]'
+                  editingNode ? 'caret-[var(--accent-edit)] placeholder-[var(--accent-edit)]' : subEntryTarget !== null ? 'caret-[var(--accent-action)] placeholder-[var(--accent-action)]' : 'caret-[var(--theme-color)] placeholder-[var(--theme-color)]'
                 }`}
                 placeholder={
                   editingNode ? 'edit text · Enter saves · Esc cancels'
@@ -2748,7 +2773,7 @@ export default function App() {
                 <div className="flex items-center justify-between px-4 h-9 border-b border-[var(--theme-color)]/20 shrink-0 select-none">
                   <span className="text-[var(--theme-color)] font-bold text-xs tracking-widest">» SYSTEM MANUAL</span>
                   <span
-                    className="cursor-pointer text-gray-500 hover:text-red-400 font-mono"
+                    className="cursor-pointer text-gray-500 hover:text-[var(--accent-danger)] font-mono"
                     onClick={() => setShowHelp(false)}
                   >[ x ]</span>
                 </div>
@@ -2793,7 +2818,7 @@ export default function App() {
                         ]],
                       ] as const).map(([sec, rows]) => (
                         <div key={sec}>
-                          <div className="text-green-400 font-bold mb-1 tracking-widest text-xs">» [ {sec} ]</div>
+                          <div className="text-[var(--theme-color)] font-bold mb-1 tracking-widest text-xs">» [ {sec} ]</div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-2 gap-y-1.5 break-words">
                             {rows.map(([k, d]) => (
                               <React.Fragment key={k}>
@@ -2851,7 +2876,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="text-green-400 font-bold mb-1 tracking-widest text-xs">» [ LAST 7 DAYS ]</div>
+                        <div className="text-[var(--theme-color)] font-bold mb-1 tracking-widest text-xs">» [ LAST 7 DAYS ]</div>
                         {weekStats.done === 0 ? (
                           <div className="opacity-50 italic">No archived completions this week yet.</div>
                         ) : (
@@ -2863,7 +2888,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="text-green-400 font-bold mb-1 tracking-widest text-xs">» [ DAILY RITUALS ]</div>
+                        <div className="text-[var(--theme-color)] font-bold mb-1 tracking-widest text-xs">» [ DAILY RITUALS ]</div>
                         {dailyTemplates.length === 0 && (
                           <div className="opacity-50 italic">None — add with /daily &lt;text&gt;, reseeds every morning.</div>
                         )}
@@ -2871,7 +2896,7 @@ export default function App() {
                           <div key={i} className="flex items-start justify-between group py-0.5">
                             <span className="min-w-0 break-words">↻ {t}</span>
                             <span
-                              className="cursor-pointer text-gray-600 hover:text-red-400 shrink-0 ml-2"
+                              className="cursor-pointer text-gray-600 hover:text-[var(--accent-danger)] shrink-0 ml-2"
                               onClick={() => dispatch({ daily: dailyRef.current.filter((_, j) => j !== i) })}
                             >[ x ]</span>
                           </div>
@@ -2879,7 +2904,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="text-green-400 font-bold mb-1 tracking-widest text-xs">» [ HISTORY · LAST 14 DAYS ]</div>
+                        <div className="text-[var(--theme-color)] font-bold mb-1 tracking-widest text-xs">» [ HISTORY · LAST 14 DAYS ]</div>
                         {recentLogs.length === 0 && (
                           <div className="opacity-50 italic">No archived days yet — history appears after the first day rollover.</div>
                         )}
