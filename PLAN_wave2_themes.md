@@ -58,12 +58,28 @@ Five custom properties, all set on the same root div that already carries
 --accent-affirm    affirmative affordances: complete-hover, promote-hover
 ```
 
-Plus two derived tints, so the dark wash backgrounds stop being `cyan-950`:
+**Amended after taking the real inventory.** Five variables is not enough. The
+hardcoded accents use *multiple stops per role* — `cyan-300`, `cyan-400`, `cyan-500` and
+`cyan-950` all appear, as do `yellow-400` and `yellow-600` — and they are not
+interchangeable: `cyan-950` is a wash behind body text, `cyan-300` is a highlight on top of
+one. Collapsing them to a single stop would change how the app looks, which §8.2 forbids.
+So the real set is eight, and a preset defines all eight explicitly rather than deriving
+them. Deriving with `color-mix` was the first instinct and it is wrong here: no formula
+reproduces Tailwind's stops exactly, so `default` would drift on day one.
 
 ```
---accent-action-wash   color-mix(in srgb, var(--accent-action) 18%, #000)
---accent-action-edge   color-mix(in srgb, var(--accent-action) 70%, transparent)
+--accent-action        cyan-400  #22d3ee    the accent itself
+--accent-action-soft   cyan-300  #67e8f9    highlight on top of a wash
+--accent-action-deep   cyan-500  #06b6d4    the ⌁ surface prompt
+--accent-action-wash   cyan-950  #083344    dark fill behind body text
+--accent-edit          yellow-400 #facc15   caret + placeholder
+--accent-edit-dim      yellow-600 #ca8a04   backlog aging tags
+--accent-danger        red-400   #f87171
+--accent-affirm        green-400 #4ade80
 ```
+
+Opacity variants (`/70`, `/40`, `/30`…) stay as `color-mix` against `transparent` — see
+§8.3. Those are per-*use*, not per-preset, so they do not multiply the table.
 
 **Contrast rule, enforced per preset, not at runtime:** every accent must sit ≥40° from
 `--theme-color`'s *resting* hue and ≥30° from every other accent. This is a review-time
@@ -88,16 +104,24 @@ type Preset = {
 };
 ```
 
+**Shipping three: `default`, `mono`, `ice`.** `amber` and `violet` were previewed and
+deferred — adding either later is one table row, which is the point of the structure.
+
 | name | identity | action | edit | danger | affirm | ramp |
 |---|---|---|---|---|---|---|
-| `default` | `hsl(142,70%,45%)` | cyan ≈187 | yellow ≈54 | red ≈0 | **must not be 142** — see below | 142 → 0 |
-| `amber` | ≈38 | ≈195 | ≈52 | ≈0 | ≈142 | 38 → 0 |
-| `mono` | ≈0% sat, light gray | ≈187 | ≈54 | ≈0 | ≈142 | null |
-| `violet` | ≈275 | ≈187 | ≈45 | ≈350 | ≈142 | 275 → 0 |
-| `ice` | ≈200 | ≈280 | ≈54 | ≈0 | ≈142 | 200 → 0 |
+| `default` | `#4ade80`-family, rest `hsl(142,70%,45%)` | cyan 187 | yellow 54 | red 0 | **142, grandfathered** | 142 → 0 |
+| `mono` | `hsl(0,0%,82%)` — zero saturation | cyan 187 | yellow 54 | red 0 | green 142 | **null** |
+| `ice` | `hsl(200,80%,60%)` | **violet 280** | yellow 54 | red 0 | green 142 | 200 → 0 |
 
-Four to six presets total. Exact values are for implementation time; the table fixes the
-*structure* and the hue relationships.
+`ice` is the one that proves the design. Its identity sits at 200°, only 13° from the stock
+cyan action accent, so move-feedback would be invisible against its own chrome — action
+moves to violet **for that preset only**. This is precisely the failure a single hue slider
+could not have prevented, and precisely why accents belong to the preset rather than to the
+app. (`amber`, when it lands, has the same problem one role over: its 45° identity swallows
+the 54° edit accent, so edit moves to magenta.)
+
+`mono` carries `ramp: null` deliberately — it is the preset for people who do not use
+deadlines, and a grey identity that lurched to red would be incoherent.
 
 **The `default` affirm problem.** Today's affirmative accent is `green-400` ≈142, which is
 exactly the resting theme color. Reproducing today's look byte-for-byte and satisfying the
