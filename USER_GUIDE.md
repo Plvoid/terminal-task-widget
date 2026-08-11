@@ -1,4 +1,4 @@
-# TERMINAL TASK — User Guide (v0.2.0)
+# TERMINAL TASK — User Guide (v0.3.0)
 
 A tiny always-on-top task HUD for Windows with a terminal soul. It lives as a small glowing ball at the edge of your screen; open it, type, done. Built for 2-second capture — no accounts, no cloud, your data never leaves your machine.
 
@@ -85,7 +85,33 @@ Editing works like everywhere else (double-click, or select + Enter); note that 
 
 ## 5. Deadline & Theme
 
+### The deadline
+
 `/deadline 18:00` sets **today's** deadline — it's one-time, not recurring, and clears automatically at the day rollover. From two hours out, the whole widget's glow slides green → yellow → red; past the deadline the countdown flips to `T+…` in red. One glance at the ball = how much time you have left.
+
+`/deadline off` clears it early (`clear` and `none` work too). Bare `/deadline` tells you what's currently set.
+
+### Themes
+
+Three colour presets ship with the widget:
+
+| Preset | Identity | Notes |
+|---|---|---|
+| `default` | green | The original look. Ramps green → red before a deadline. |
+| `mono` | grey | Zero saturation — the accent colours carry all the meaning. **Never ramps**, by design: it's the preset for people who don't run deadlines, and a grey UI lurching to red would be incoherent. |
+| `ice` | blue | Ramps blue → red. Its action accent moves to violet, because a cyan accent would vanish into a blue identity colour. |
+
+Three ways to switch, all equivalent:
+
+- **Type it**: `/theme ice`
+- **Type a unique prefix**: `/theme i` — `d`, `m`, and `i` are each unambiguous today. If a prefix ever matches two presets, the widget lists them instead of guessing.
+- **Pick it**: type `/theme` followed by a space. The dropdown above the input lists every preset with a colour swatch; **click one and it applies immediately** — no Enter needed. The active preset is marked.
+
+Bare `/theme` posts the list as a notice, with a `*` on the current one.
+
+**The ramp** — the glow that slides toward red over the last two hours — can be turned off independently of the preset: `/theme ramp off`. It stays off when you switch presets, so turning it off once is permanent until you say otherwise. With the ramp off, the header countdown is your urgency signal.
+
+Your choice survives restarts. If the stored preset name is ever unrecognisable, the widget silently falls back to `default` rather than greeting you with an error.
 
 ## 6. Days, History & Streaks
 
@@ -102,14 +128,16 @@ Open **`/log`** (tab `4:LOG` in the manual) for: your **streak** gauge (consecut
 
 | Command | What it does |
 |---|---|
-| `/deadline HH:MM` | Today's deadline (one-time, clears at day end) |
+| `/deadline HH:MM` | Today's deadline (one-time, clears at day end) · `off` clears it |
+| `/theme <name>` | Colour preset — `default`, `mono`, `ice`. A unique prefix works (`/theme i`); bare `/theme` lists them |
+| `/theme ramp on\|off` | Whether the glow ramps toward red before a deadline |
 | `/l <text>` | Add to backlog |
 | `/daily <text>` | Recurring daily ritual |
 | `/log` | History, streak & rituals |
 | `/clear` | Clear today's tasks (Ctrl+Z restores) |
 | `/export` | Snapshot all data to a timestamped JSON |
 | `/shortcut` | Rebind the global hotkey — live preview while you hold modifiers; Enter saves, bare Enter resets to `Alt+X`, Esc cancels |
-| `/startup [on\|off]` | Launch at login. **On by default** — bare `/startup` toggles, `on`/`off` set it explicitly. Current state is shown in `/about`. |
+| `/startup [on\|off]` | Launch at login. **On by default**, including after an upgrade or a reinstall — bare `/startup` toggles, `on`/`off` set it explicitly. Turn it off and it stays off, through any later reinstall. Current state is shown in `/about`. |
 | `/help` · `/about` | The manual · version & info |
 
 ## 8. Keyboard Reference
@@ -123,9 +151,9 @@ Open **`/log`** (tab `4:LOG` in the manual) for: your **streak** gauge (consecut
 | `Alt+↑/↓` | Reorder selected row among its siblings |
 | `Tab` / `Shift+Tab` | Demote / promote — subtree moves intact, max 3 levels |
 | `Backspace`/`Del` | Delete selected |
-| `Ctrl+Z` | Undo (tasks & subtasks) |
+| `Ctrl+Z` | Undo (tasks, backlog & rituals together, 20 steps) — **keyboard only, on purpose** |
 | `Esc` | Cancel mode → deselect → collapse (also aborts a pending move) |
-| `→` / `Tab` | Accept command autocomplete |
+| `→` / `Tab` | Accept the ghost completion — completes a command, and after a space, its values (`/theme i` → `/theme ice`) |
 | `Alt+X` | Global show/hide (rebindable via `/shortcut`) |
 
 ## 9. Your Data
