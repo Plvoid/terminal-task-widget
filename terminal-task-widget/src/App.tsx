@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { getCurrentWindow, LogicalSize, LogicalPosition, PhysicalPosition, currentMonitor, primaryMonitor } from "@tauri-apps/api/window";
 import "./App.css";
 import { register, unregister, isRegistered } from '@tauri-apps/plugin-global-shortcut';
@@ -443,6 +443,24 @@ const COMMANDS = [
 
 const STATE_FILE = 'state.json';
 
+// --- Dev builds must never touch real data ----------------------------------
+// A dev build and the installed build are the same app to Windows: same bundle
+// identifier, therefore the same WebView2 profile and the same localStorage.
+// They also both wrote to `Documents/TerminalTasks`, so an afternoon of typing
+// test tasks in `tauri dev` overwrote `state.json` — the very file the
+// empty-localStorage restore path recovers FROM. Both copies of the truth then
+// said "test tasks", and a real task list was only recovered because an old
+// WebView2 profile happened to survive under a previous identifier.
+//
+// Two independent guards now, deliberately belt-and-braces:
+//   1. THIS constant separates the on-disk data, and it keys off the build
+//      itself, so it holds even if someone runs the dev server the old way.
+//      The disaster-recovery file therefore stays intact no matter what.
+//   2. `tauri.dev.conf.json` overrides the identifier, which separates
+//      localStorage. That one only applies via `npm run tauri:dev`.
+// Guard 1 is the important one: it protects the thing that cannot be rebuilt.
+const DATA_DIR = import.meta.env.PROD ? 'TerminalTasks' : 'TerminalTasks-dev';
+
 // --- What a day's archive is made of ---------------------------------------
 // The rollover used to archive `saved.filter(t => t.completed)` — TOP-LEVEL
 // completed tasks only. Completion is derived upward, so a parent stays
@@ -578,6 +596,11 @@ const PRESETS: Record<string, Preset> = {
   // single hue knob could have prevented that.
   ice: {
     theme: 'hsl(200, 80%, 60%)',
+    // Ramp `to` hsl(0,75,60) sits near --accent-danger hsl(0,75,65%). Not equal,
+    // so §8.5 holds by the letter; the near-collision at the overdue end is the
+    // same property `default` has always had (its ramp also ends on danger red),
+    // and ramp-end chrome and danger accents are rarely co-visible. Documented
+    // deliberately — do not "fix" by moving the endpoint without a design pass.
     ramp: { from: [200, 80, 60], to: [0, 75, 60] },
     accents: {
       '--accent-action':      'hsl(280, 65%, 70%)',
@@ -596,6 +619,54 @@ const PRESET_NAMES = Object.keys(PRESETS);
 // Unknown name resolves to `default` in silence: someone who downgrades and
 // re-upgrades, or hand-edits localStorage, must not meet an error on launch.
 const presetOf = (name: string): Preset => PRESETS[name] ?? PRESETS.default;
+
+// --- Command argument resolution -------------------------------------------
+// Typing a preset name in full was the sore spot: the ghost completer stops at
+// the first space (see ARG_POOLS below), so `/theme ` — exactly where help is
+// wanted — offered none. Prefix matching is the other half of the fix, and it
+// is deliberately NOT a numeric code scheme: `PRESET_NAMES` is
+// `Object.keys(PRESETS)`, so a code would silently re-point the moment a preset
+// is added or the object literal is reordered, and `geek-theme` persists a
+// name, not an index.
+type ArgMatch =
+  | { kind: 'ok'; name: string }
+  | { kind: 'ambiguous'; names: string[] }
+  | { kind: 'none' };
+
+// Exact match always wins over prefix. A future preset named `ice2` must not
+// make plain `ice` ambiguous, and nothing may shadow the reserved word `ramp`.
+// Anything short of a unique hit is REPORTED, never guessed — landing on the
+// wrong preset is indistinguishable from a typo that did nothing.
+const resolveArg = (arg: string, pool: string[]): ArgMatch => {
+  if (pool.includes(arg)) return { kind: 'ok', name: arg };
+  const hits = pool.filter(n => n.startsWith(arg));
+  if (hits.length === 1) return { kind: 'ok', name: hits[0] };
+  if (hits.length > 1) return { kind: 'ambiguous', names: hits };
+  return { kind: 'none' };
+};
+
+const ON_OFF = ['on', 'off'];
+const THEME_HEADS = [...PRESET_NAMES, 'ramp'];
+
+// Which commands have a CLOSED argument space, keyed by everything typed
+// before the token being completed — so `/theme ramp ` offers a different pool
+// than `/theme `. Drives the ghost and the hint dropdown only.
+//
+// This is a SUGGESTION table, never the parser — each command still owns its
+// acceptance rules, so adding a pool here can never change what a command
+// accepts.
+//
+// CLOSED argument spaces only. Commands with free-text arguments (`/l`,
+// `/daily`), a live capture (`/shortcut`), or a mixed space are absent by
+// design: no entry means no ghost and no rows, which is right for them.
+// `/deadline` is the instructive omission — it takes `off`/`clear`/`none` OR an
+// HH:MM time, so listing `off` would have the dropdown answer "no match" at the
+// user while they type a perfectly valid `14:30`.
+const ARG_POOLS: Record<string, string[]> = {
+  '/theme': THEME_HEADS,
+  '/theme ramp': ON_OFF,
+  '/startup': ON_OFF,
+};
 
 function useDeadlineColor(deadlineStr: string, preset: Preset, rampOn: boolean) {
   const [color, setColor] = useState(preset.theme);
@@ -620,7 +691,7 @@ function useDeadlineColor(deadlineStr: string, preset: Preset, rampOn: boolean) 
       // undefined, deadlineMinutes is NaN, both comparisons below are false,
       // and the ramp branch emitted `hsl(NaN, 70%, NaN%)` — invalid CSS.
       // Every `var(--theme-color)` then resolved to an invalid value: text fell
-      // back to the inherited `:root { color: #00ff00 }` (a harsher neon green
+      // back to the inherited `:root` colour (then a hardcoded neon green
       // that reads as roughly right, which is why this went unnoticed), while
       // the `color-mix()` borders and glows became invalid declarations and
       // were dropped outright — no panel border, no ball glow.
@@ -679,7 +750,13 @@ export default function App() {
   // Presentation only. Neither of these may ever reach `dispatch` — a theme
   // change must not cost an undo step (spec §8.6). Persisted separately so
   // switching preset cannot silently re-enable a ramp the user turned off.
-  const [themeName, setThemeName] = useState<string>(() => localStorage.getItem('geek-theme') || 'default');
+  const [themeName, setThemeName] = useState<string>(() => {
+    // Normalized here, not just in presetOf: the bare `/theme` listing marks
+    // the current name with `*`, so an unrecognized stored value must resolve
+    // to the name it actually renders as.
+    const saved = localStorage.getItem('geek-theme') || 'default';
+    return PRESETS[saved] ? saved : 'default';
+  });
   const [rampOn, setRampOn] = useState<boolean>(() => localStorage.getItem('geek-ramp') !== 'off');
   const [hotkey, setHotkey] = useState<string>(() => localStorage.getItem('geek-hotkey') || 'Alt+X');
   // null = not yet read, or the platform refused the query (portable exe, locked-down box)
@@ -723,6 +800,27 @@ export default function App() {
   const rows = useMemo(() => flattenVisible(tasks, backlog), [tasks, backlog]);
   const preset = presetOf(themeName);
   const themeColor = useDeadlineColor(deadline, preset, rampOn);
+
+  // Mirror the theme variables onto <html>, one level ABOVE the app root that
+  // already carries them as an inline style.
+  //
+  // LOAD-BEARING, and not for the reason it looks like. `App.css` sets
+  // `:root { color: var(--theme-color, …) }`, which is the fix for the
+  // one-second colour wash on panel open (see the comment there). That rule can
+  // only resolve if `--theme-color` exists ON `<html>` — the app root's inline
+  // style is a level too low. Delete this effect and the flash returns.
+  //
+  // `useLayoutEffect`, not `useEffect`: it has to land before the browser
+  // paints, or the first frame is the one we are trying to fix.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--theme-color', themeColor);
+    // The accents share the mechanism exactly — an unresolved `--accent-danger`
+    // falls back to the same inherited green — so they ride along rather than
+    // waiting to be reported separately.
+    for (const [k, v] of Object.entries(preset.accents)) root.style.setProperty(k, v);
+  }, [themeColor, preset]);
+
   isRecordingRef.current = isRecordingShortcut;
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -876,11 +974,14 @@ export default function App() {
     hotkey,
     daily: dailyTemplates,
     lastDate: localStorage.getItem('geek-last-date') || '',
+    theme: themeName,
+    // Mirrors the localStorage convention: 'off' is the only meaningful value.
+    ramp: rampOn ? 'on' : 'off',
   });
 
   const ensureLogFolder = async () => {
     const docPath = await documentDir();
-    const folderPath = await join(docPath, 'TerminalTasks');
+    const folderPath = await join(docPath, DATA_DIR);
     if (!(await exists(folderPath))) await mkdir(folderPath, { recursive: true });
     return folderPath;
   };
@@ -898,7 +999,7 @@ export default function App() {
   const exportDailyLog = async (dateStr: string, tasksToExport: Task[], backlogTasks: Task[]) => {
     try {
       const docPath = await documentDir();
-      const folderPath = await join(docPath, 'TerminalTasks');
+      const folderPath = await join(docPath, DATA_DIR);
       const folderExists = await exists(folderPath);
       if (!folderExists) await mkdir(folderPath, { recursive: true });
 
@@ -1131,16 +1232,50 @@ export default function App() {
     (async () => {
       try {
         let on = await isAutostartEnabled();
-        if (import.meta.env.PROD && !localStorage.getItem('geek-autostart-init')) {
-          const returning = !!localStorage.getItem('geek-tasks') || !!localStorage.getItem('geek-last-date');
-          if (!returning && !on) {
+        // An explicit `/startup` choice outlives the Run key, and has to, because
+        // the two halves of this setting live in different places that come
+        // apart: the key is in the Windows registry, the flags are in
+        // localStorage inside the WebView2 profile. The profile survives an
+        // uninstall — that is why task data does — but the key does not. A
+        // reinstall therefore lands on `geek-autostart-init` set, autostart off,
+        // and nothing able to reconcile them, because the flag only records THAT
+        // a choice was made and not WHICH. `geek-autostart-pref` records which,
+        // so the setting can be repaired without ever overriding someone who
+        // deliberately turned it off — their preference says `off`, and this
+        // replays that just as faithfully.
+        const pref = localStorage.getItem('geek-autostart-pref');
+        if (pref === 'on' || pref === 'off') {
+          const want = pref === 'on';
+          if (want !== on) {
+            if (want) await enableAutostart(); else await disableAutostart();
+            on = want;
+          }
+        } else if (import.meta.env.PROD) {
+          // No preference has ever been recorded, so adopt the intended default
+          // — ON — whatever the install history. This replaced a `returning`
+          // heuristic (task data present ⇒ not a first run ⇒ leave alone) that
+          // was too cautious in practice: it meant the default reached ONLY
+          // people installing for the very first time. Anyone upgrading, or
+          // reinstalling over a surviving profile, silently never got it, and
+          // never would, because the once-only flag was already stamped.
+          //
+          // The cost, accepted deliberately: someone who ran `/startup off`
+          // under a pre-0.3.0 build recorded no preference either, so this
+          // switches them back on once. From here that cannot recur — `off` is
+          // recorded as explicitly as `on` and replayed above. The one-time
+          // ambiguity ends with this release.
+          if (!on) {
             await enableAutostart();
             on = true;
-            // The app boots collapsed to the ball, so a notice posted now
-            // would expire unseen. Defer it to the first panel open — the
-            // flag is in localStorage, so it survives until then.
+            // The app boots collapsed to the ball, so a notice posted now would
+            // expire unseen. Defer it to the first panel open — the flag is in
+            // localStorage, so it survives until then. Enabling silently would
+            // be the objectionable version of this; the user is told.
             localStorage.setItem('geek-autostart-announce', '1');
           }
+          localStorage.setItem('geek-autostart-pref', 'on');
+          // Still stamped, though nothing above reads it any more: downgrading
+          // to a pre-0.3.0 build must not re-run that release's first-run logic.
           localStorage.setItem('geek-autostart-init', '1');
         }
         setAutostartOn(on);
@@ -1292,7 +1427,7 @@ export default function App() {
     (async () => {
       try {
         const docPath = await documentDir();
-        const filePath = await join(docPath, 'TerminalTasks', STATE_FILE);
+        const filePath = await join(docPath, DATA_DIR, STATE_FILE);
         if (!(await exists(filePath))) return;
         const s = JSON.parse(await readTextFile(filePath));
         // Hand-edited state.json is the main way over-deep data can appear —
@@ -1311,6 +1446,8 @@ export default function App() {
         if (Array.isArray(s.archive)) setArchiveLogs(s.archive);
         if (typeof s.deadline === 'string') setDeadline(s.deadline);
         if (typeof s.hotkey === 'string' && s.hotkey) setHotkey(s.hotkey);
+        if (typeof s.theme === 'string') setThemeName(PRESETS[s.theme] ? s.theme : 'default');
+        if (typeof s.ramp === 'string') setRampOn(s.ramp !== 'off');
         if (Array.isArray(s.daily)) { dailyRef.current = s.daily; setDailyTemplates(s.daily); }
         resetHistory();
         if (typeof s.lastDate === 'string' && s.lastDate) localStorage.setItem('geek-last-date', s.lastDate);
@@ -1342,20 +1479,31 @@ export default function App() {
     postNotice(`[!] flattened ${n} items deeper than ${MAX_DEPTH} levels`);
   }, [isExpanded]);
 
+  // Last-written values, so a run triggered by ONE dep changing does not
+  // re-serialize the other six keys. First real run sees an empty object and
+  // writes everything.
+  const prevPersist = useRef<{
+    tasks?: Task[]; hotkey?: string; deadline?: string; themeName?: string;
+    rampOn?: boolean; archive?: any[]; backlog?: Task[]; daily?: string[];
+  }>({});
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
-    localStorage.setItem('geek-tasks', JSON.stringify(tasks));
-    localStorage.setItem('geek-hotkey', hotkey);
-    localStorage.setItem('geek-deadline', deadline);
-    localStorage.setItem('geek-theme', themeName);
+    const prev = prevPersist.current;
+    if (prev.tasks !== tasks) localStorage.setItem('geek-tasks', JSON.stringify(tasks));
+    if (prev.hotkey !== hotkey) localStorage.setItem('geek-hotkey', hotkey);
+    if (prev.deadline !== deadline) localStorage.setItem('geek-deadline', deadline);
+    if (prev.themeName !== themeName) localStorage.setItem('geek-theme', themeName);
     // Only written when OFF, so absent means on — a fresh profile keeps the ramp.
-    if (rampOn) localStorage.removeItem('geek-ramp'); else localStorage.setItem('geek-ramp', 'off');
-    localStorage.setItem('geek-archive', JSON.stringify(_archiveLogs));
-    localStorage.setItem('geek_backlog', JSON.stringify(backlog));
-    localStorage.setItem('geek-daily', JSON.stringify(dailyTemplates));
+    if (prev.rampOn !== rampOn) {
+      if (rampOn) localStorage.removeItem('geek-ramp'); else localStorage.setItem('geek-ramp', 'off');
+    }
+    if (prev.archive !== _archiveLogs) localStorage.setItem('geek-archive', JSON.stringify(_archiveLogs));
+    if (prev.backlog !== backlog) localStorage.setItem('geek_backlog', JSON.stringify(backlog));
+    if (prev.daily !== dailyTemplates) localStorage.setItem('geek-daily', JSON.stringify(dailyTemplates));
+    prevPersist.current = { tasks, hotkey, deadline, themeName, rampOn, archive: _archiveLogs, backlog, daily: dailyTemplates };
     // Debounced disk mirror — localStorage alone dies with the WebView cache
     if (stateSaveTimer.current) clearTimeout(stateSaveTimer.current);
     stateSaveTimer.current = setTimeout(() => { writeStateFile(); }, 800);
@@ -1363,7 +1511,12 @@ export default function App() {
 
   // Minute tick for the deadline countdown
   useEffect(() => {
-    const id = setInterval(() => setNowTick(new Date()), 30000);
+    const id = setInterval(() => {
+      const d = new Date();
+      // Bail with the previous object when the minute hasn't changed — no
+      // state change, no render.
+      setNowTick(prev => Math.floor(prev.getTime() / 60000) === Math.floor(d.getTime() / 60000) ? prev : d);
+    }, 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -1466,6 +1619,11 @@ export default function App() {
         : next?.kind === 'task' && samePath(next.path, [...pm.parentPath, pm.from]);
       if (!onSource) commitRef.current();
     }
+    // `next` was captured BEFORE the commit above, and that is deliberate:
+    // selRefOf re-resolves this stale position against the post-dispatch refs,
+    // selecting whatever node now occupies the visual slot under the
+    // stationary cursor. A commit only permutes one sibling array, so the
+    // position always resolves.
     setSel(prev => (sameSel(prev, next) ? prev : next));
   };
 
@@ -1479,14 +1637,22 @@ export default function App() {
   const countdown = (() => {
     if (!deadline) return '';
     const [dh, dm] = deadline.split(':').map(Number);
+    // Same guard as useDeadlineColor: a malformed non-empty deadline string
+    // must render nothing, not "T+NaNm".
+    if (!isFinite(dh) || !isFinite(dm)) return '';
     const mins = dh * 60 + dm - (nowTick.getHours() * 60 + nowTick.getMinutes());
     const abs = Math.abs(mins);
     const fmt = abs >= 60 ? `${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, '0')}m` : `${abs}m`;
     return mins >= 0 ? `T-${fmt}` : `T+${fmt}`;
   })();
 
-  // Consecutive days with at least one completed task (today counts live)
-  const streak = (() => {
+  const todayKey = nowTick.toDateString();
+
+  // Consecutive days with at least one completed task (today counts live).
+  // todayKey is a dep because the walk starts from "yesterday" relative to now:
+  // without it, crossing midnight with no archive/completed change would keep
+  // serving the stale chain (the pre-memo IIFE recomputed every render).
+  const streak = useMemo(() => {
     const days = new Set(
       _archiveLogs
         .filter((l: any) => Array.isArray(l.tasks) && l.tasks.length > 0)
@@ -1500,16 +1666,15 @@ export default function App() {
       d.setDate(d.getDate() - 1);
     }
     return s;
-  })();
+  }, [_archiveLogs, completed, todayKey]);
 
-  const recentLogs = [..._archiveLogs].slice(-14).reverse();
+  const recentLogs = useMemo(() => [..._archiveLogs].slice(-14).reverse(), [_archiveLogs]);
 
   // Morning surfacing: once per day, offer the OLDEST backlog item that has
   // sat for ≥7 days (fresh items don't need a nudge; items with no timestamp
   // predate the createdAt field and count as old). Zero background cost —
   // pure render math + one localStorage key; the "skipped" marker naturally
   // expires when the date string changes.
-  const todayKey = nowTick.toDateString();
   const [surfaceSkip, setSurfaceSkip] = useState<string>(() => localStorage.getItem('geek-surface-skip') || '');
   const surfaceIdx = (() => {
     let idx = -1, best = Infinity;
@@ -1527,8 +1692,10 @@ export default function App() {
     localStorage.setItem('geek-surface-skip', todayKey);
   };
 
-  // Rolling 7-day summary from the archive (excludes today, which is live)
-  const weekStats = (() => {
+  // Rolling 7-day summary from the archive (excludes today, which is live).
+  // Keyed by todayKey (a day STRING), so the window shifts when the tick
+  // crosses midnight without depending on the Date object itself.
+  const weekStats = useMemo(() => {
     const dayMs = 86400000;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1549,24 +1716,109 @@ export default function App() {
       }
     }
     return { done, days, bestN, bestDay };
+  }, [_archiveLogs, todayKey]);
+
+  // Inline autocomplete. Two stages, ONE mechanism: while the first token is
+  // being typed the pool is the command list; once a command is complete and a
+  // space has been typed, the pool is that command's `ARG_POOLS` entry. When
+  // exactly one candidate matches, the remainder renders as ghost text and
+  // → or Tab accepts it.
+  //
+  // The old guard was `!inputValue.includes(' ')`, which killed completion at
+  // the exact moment it was most wanted: `/theme ` offered nothing, so preset
+  // names had to be typed out from memory. That, not the length of the names,
+  // was what made switching themes feel like work.
+  const completionCtx = (() => {
+    if (!inputValue.startsWith('/') || editingNode || subEntryTarget !== null || isRecordingShortcut) return null;
+    // A trailing space means "begin the next token", so the split must KEEP its
+    // empty final element: `'/theme '.split(' ')` is `['/theme', '']`, and that
+    // empty string is the token being completed — which is what makes a bare
+    // `/theme ` offer the whole pool instead of nothing.
+    const parts = inputValue.toLowerCase().split(' ');
+    const typed = parts[parts.length - 1];
+    if (parts.length === 1) return { pool: COMMANDS.map(c => c.cmd), typed, prefix: '', stage: 'cmd' as const };
+    const prefix = parts.slice(0, -1).join(' ');
+    const pool = ARG_POOLS[prefix];
+    // No pool = free-text argument. Returning null here is what keeps `/l` and
+    // `/daily` from sprouting a ghost over the user's own words.
+    return pool ? { pool, typed, prefix, stage: 'arg' as const } : null;
   })();
 
-  // Inline command autocomplete: when the typed "/prefix" matches exactly one
-  // command, the remainder renders as ghost text; → or Tab accepts it.
-  const typedCmd =
-    inputValue.startsWith('/') && !inputValue.includes(' ') &&
-    !editingNode && subEntryTarget === null && !isRecordingShortcut
-      ? inputValue.toLowerCase()
-      : null;
-  const cmdMatches = typedCmd ? COMMANDS.filter(c => c.cmd.startsWith(typedCmd)) : [];
-  const ghost = typedCmd && cmdMatches.length === 1 && cmdMatches[0].cmd.length > typedCmd.length
-    ? cmdMatches[0].cmd.slice(typedCmd.length)
+  const completionHits = completionCtx
+    ? completionCtx.pool.filter(v => v.startsWith(completionCtx.typed))
+    : [];
+  const ghost = completionCtx && completionHits.length === 1 && completionHits[0].length > completionCtx.typed.length
+    ? completionHits[0].slice(completionCtx.typed.length)
     : '';
 
-  const acceptGhost = () => {
-    const full = cmdMatches[0];
-    setInputValue(full.usage.includes('<') ? full.cmd + ' ' : full.cmd);
+  // Writing a chosen candidate back into the input. Shared by the ghost (→/Tab)
+  // and by a dropdown click, so the two can never disagree about trailing
+  // spaces — the bug this would otherwise grow.
+  const applyCompletion = (full: string) => {
+    if (!completionCtx) return;
+    if (completionCtx.stage === 'cmd') {
+      // A command that takes an argument gets a trailing space so the ghost
+      // re-arms on the argument pool instead of stopping dead. `[` is matched
+      // as well as `<` — `/startup [on|off]` has a pool and used to miss out.
+      const meta = COMMANDS.find(c => c.cmd === full);
+      const takesArg = !!meta && (meta.usage.includes('<') || meta.usage.includes('['));
+      setInputValue(takesArg ? full + ' ' : full);
+    } else {
+      // `/theme ramp` is itself a head that takes an argument, so it earns the
+      // same trailing space. Asking `ARG_POOLS` rather than hardcoding the case
+      // means a future two-level argument gets this for free.
+      const next = `${completionCtx.prefix} ${full}`;
+      setInputValue(ARG_POOLS[next] ? `${next} ` : next);
+    }
     setShowHint(true);
+  };
+
+  const acceptGhost = () => {
+    if (!completionCtx || completionHits.length !== 1) return;
+    applyCompletion(completionHits[0]);
+  };
+
+  // --- The mouse path for themes ---------------------------------------------
+  // Clicking an argument row APPLIES it instead of merely completing it, but
+  // only where doing so is presentation-only. `/theme` never reaches `dispatch`
+  // (spec §8.6), so a click here cannot consume an undo step. Anything that
+  // touches the task tree deliberately has no entry below and still needs
+  // Enter — a click must never mint an undo entry the user did not ask for.
+  //
+  // This is what amends PLAN_wave2_themes.md §5 ("themes are driven by command
+  // only"). The reasoning there cited invariant #1, but #1 forbids stealing
+  // KEYBOARD FOCUS, not being clickable: these rows carry the same
+  // `onMouseDown` + `preventDefault()` the dropdown has always used, so the
+  // command input never blurs. The five help-modal tab buttons and the ritual
+  // `[ x ]` already rely on exactly that.
+  const applyArgOnClick = (prefix: string, value: string): boolean => {
+    if (prefix === '/theme' && PRESETS[value]) {
+      setThemeName(value);
+      postNotice(`[OK] theme ${value}`);
+      return true;
+    }
+    if (prefix === '/theme ramp' && (value === 'on' || value === 'off')) {
+      const on = value === 'on';
+      setRampOn(on);
+      postNotice(on
+        ? (preset.ramp ? '[OK] deadline ramp on' : '[OK] ramp on · this preset has none')
+        : '[OK] deadline ramp off');
+      return true;
+    }
+    return false;
+  };
+
+  // Right-hand annotation for an argument row. Only the pools with live state
+  // get one; everything else renders an empty cell rather than filler.
+  const argRowNote = (prefix: string, value: string): string => {
+    if (prefix === '/theme') {
+      if (value === 'ramp') return `deadline ramp · ${rampOn ? 'on' : 'off'}`;
+      if (value === themeName) return 'active';
+      return PRESETS[value]?.ramp ? '' : 'no ramp';
+    }
+    if (prefix === '/theme ramp') return (value === 'on') === rampOn ? 'active' : '';
+    if (prefix === '/startup') return autostartOn === null ? '' : (value === 'on') === autostartOn ? 'active' : '';
+    return '';
   };
 
   // Cyan pulse on a row (reordered, added, promoted)
@@ -1908,6 +2160,7 @@ export default function App() {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
       e.preventDefault();
       if (history.length > 0) {
+        mouseNavEnabled.current = false;
         setHistory(prev => prev.slice(0, -1));
         restoreSnapshot(history[history.length - 1]);
       }
@@ -2067,6 +2320,37 @@ export default function App() {
 
       if (!text) return;
 
+      if (editingNode) {
+        // Resolved HERE, not where the edit was opened: rows above the target
+        // may have been deleted or reordered in between.
+        //
+        // Both branches dispatch ONLY on a real change. Opening an editor and
+        // pressing Enter without typing used to push an undo entry, as did
+        // committing an edit whose node had vanished in the meantime. Undo then
+        // spent a press restoring a snapshot identical to the current state,
+        // which reads as "Ctrl+Z is broken" — the user cannot tell a dead press
+        // from an ignored one. Anything that does not change the tree must not
+        // occupy a slot in a 20-deep history.
+        const editId = editingNode.id;
+        if (editingNode.kind === 'backlog') {
+          const target = backlogRef.current.find(t => t.id === editId);
+          if (target && target.text !== text) {
+            dispatch({ backlog: backlogRef.current.map(t => t.id === editId ? { ...t, text } : t) });
+          }
+        } else {
+          const newTasks: Task[] = JSON.parse(JSON.stringify(tasks));
+          const path = findPathById(newTasks, editId);
+          const node = path ? nodeAt(newTasks, path) : null;
+          if (node && node.text !== text) {
+            node.text = text;
+            dispatchTasks(newTasks);
+          }
+        }
+        setInputValue('');
+        setEditingNode(null);
+        return;
+      }
+
       if (text === '/help') {
         setShowHelp(true);
         setHelpTab('keys');
@@ -2117,7 +2401,7 @@ export default function App() {
             const stamp = `${n.getFullYear()}${p(n.getMonth() + 1)}${p(n.getDate())}-${p(n.getHours())}${p(n.getMinutes())}`;
             const filePath = await join(folderPath, `export-${stamp}.json`);
             await writeTextFile(filePath, JSON.stringify(statePayload(), null, 2));
-            postNotice(`[OK] Documents/TerminalTasks/export-${stamp}.json`);
+            postNotice(`[OK] Documents/${DATA_DIR}/export-${stamp}.json`);
           } catch (error) {
             console.error("Export failed:", error);
             postNotice('[ERR] export failed');
@@ -2140,6 +2424,9 @@ export default function App() {
             // An explicit choice is final: make sure the first-run default
             // can never revisit this, even if the flag was somehow lost.
             localStorage.setItem('geek-autostart-init', '1');
+            // …and record WHICH way, not merely that a choice was made. The
+            // boot effect replays this against the Run key — see there.
+            localStorage.setItem('geek-autostart-pref', want ? 'on' : 'off');
             localStorage.removeItem('geek-autostart-announce');
             postNotice(`[OK] launch at login: ${want ? 'ON' : 'OFF'}${want === cur ? ' (unchanged)' : ''}`);
           } catch (error) {
@@ -2152,8 +2439,15 @@ export default function App() {
         return;
       }
       if (text === '/clear') {
-        dispatchTasks([]);
-        postNotice('[OK] cleared · Ctrl+Z restores');
+        // Same rule as the edit commit: an empty list has nothing to clear, and
+        // pushing a snapshot for it would burn an undo slot and make the next
+        // Ctrl+Z look dead. Say so instead of silently doing nothing.
+        if (tasksRef.current.length === 0) {
+          postNotice('[..] nothing to clear');
+        } else {
+          dispatchTasks([]);
+          postNotice('[OK] cleared · Ctrl+Z restores');
+        }
         setInputValue('');
         return;
       }
@@ -2173,24 +2467,6 @@ export default function App() {
         return;
       }
 
-      if (editingNode) {
-        // Resolved HERE, not where the edit was opened: rows above the target
-        // may have been deleted or reordered in between.
-        const editId = editingNode.id;
-        if (editingNode.kind === 'backlog') {
-          dispatch({ backlog: backlogRef.current.map(t => t.id === editId ? { ...t, text } : t) });
-        } else {
-          const newTasks: Task[] = JSON.parse(JSON.stringify(tasks));
-          const path = findPathById(newTasks, editId);
-          const node = path ? nodeAt(newTasks, path) : null;
-          if (node) node.text = text;
-          dispatchTasks(newTasks);
-        }
-        setInputValue('');
-        setEditingNode(null);
-        return;
-      }
-
       if (text === '/shortcut') {
         setIsRecordingShortcut(true);
         setTempShortcut('');
@@ -2198,27 +2474,48 @@ export default function App() {
         return;
       }
 
-      // Themes are command-driven because invariant #1 forbids adding any
-      // focusable element to the panel — a clickable picker in the help modal
-      // would take focus off the command input. Nothing here dispatches, so a
-      // theme change costs no undo step (spec §8.6).
+      // The command is still the canonical way to change theme; the dropdown
+      // rows (see `applyArgOnClick`) are a second door onto the same two
+      // setters, not a second implementation. Nothing on either path
+      // dispatches, so a theme change costs no undo step (spec §8.6).
       if (text === '/theme' || text.startsWith('/theme ')) {
-        const arg = text.slice('/theme'.length).trim().toLowerCase();
-        if (arg === '') {
+        // Tokenized, not string-matched: `/theme ramp  off` (double space) must
+        // still parse.
+        const args = text.slice('/theme'.length).trim().toLowerCase().split(/\s+/).filter(s => s);
+        // The head token is resolved against presets AND the reserved word
+        // `ramp` from one pool, so `/theme i` and `/theme r on` both behave the
+        // way the ghost said they would. Resolving up front, rather than adding
+        // prefix logic to each branch, is what keeps the two prefix spaces from
+        // disagreeing about a name like `rose`.
+        const head: ArgMatch | null = args.length === 0
+          ? null
+          : resolveArg(args[0], THEME_HEADS);
+        if (head === null) {
           postNotice(`[..] ${PRESET_NAMES.map(n => (n === themeName ? `*${n}` : n)).join(' · ')} · ramp ${rampOn ? 'on' : 'off'}`);
-        } else if (arg === 'ramp off' || arg === 'ramp on') {
-          const on = arg.endsWith('on');
-          // Say so even when the ACTIVE preset has no ramp of its own —
-          // otherwise `/theme ramp on` under `mono` looks like it did nothing.
-          setRampOn(on);
-          postNotice(on
-            ? (preset.ramp ? '[OK] deadline ramp on' : '[OK] ramp on · this preset has none')
-            : '[OK] deadline ramp off');
-        } else if (PRESETS[arg]) {
-          setThemeName(arg);
-          postNotice(`[OK] theme ${arg}`);
-        } else {
+        } else if (head.kind === 'ambiguous') {
+          postNotice(`[!] ambiguous · ${head.names.join(' · ')}`);
+        } else if (head.kind === 'none') {
           postNotice(`[ERR] unknown theme · ${PRESET_NAMES.join(' · ')}`);
+        } else if (head.name === 'ramp') {
+          // `on`/`off` are prefix-matched too, but only `of` reaches `off` — a
+          // bare `o` is ambiguous and falls through to the usage notice rather
+          // than picking one.
+          const sub: ArgMatch = args.length > 1 ? resolveArg(args[1], ON_OFF) : { kind: 'none' };
+          if (sub.kind === 'ok') {
+            const on = sub.name === 'on';
+            // Say so even when the ACTIVE preset has no ramp of its own —
+            // otherwise `/theme ramp on` under `mono` looks like it did nothing.
+            setRampOn(on);
+            postNotice(on
+              ? (preset.ramp ? '[OK] deadline ramp on' : '[OK] ramp on · this preset has none')
+              : '[OK] deadline ramp off');
+          } else {
+            // Bare `/theme ramp` used to fall through to "unknown theme".
+            postNotice('[!] usage: /theme ramp on|off');
+          }
+        } else {
+          setThemeName(head.name);
+          postNotice(`[OK] theme ${head.name}`);
         }
         setInputValue('');
         setShowHint(false);
@@ -2697,7 +2994,7 @@ export default function App() {
                 </div>
               )}
               {backlog.map((task, idx) => (
-                <React.Fragment key={idx}>
+                <React.Fragment key={task.id}>
                 <div
                   ref={setRowRef(`b-${idx}`)}
                   // Selection here used to be a lone `bg-gray-800/40` — the same
@@ -2805,24 +3102,73 @@ export default function App() {
           >
             {showHint && inputValue.startsWith('/') && (
               <div className="absolute bottom-full left-0 mb-2 w-full bg-[#111]/95 border border-[var(--theme-color)]/20 rounded-md p-1 shadow-xl z-50 backdrop-blur-md">
-                {COMMANDS.filter(c => c.cmd.startsWith(inputValue.split(' ')[0])).map((cmd, idx) => (
-                  <div key={idx} className="flex justify-between items-center px-3 py-2 text-sm hover:bg-white/5 cursor-pointer"
-                    onMouseDown={(e) => {
-                      // use mousedown (not click) so the input never loses focus
-                      e.preventDefault();
-                      setInputValue(cmd.usage.includes('<') ? cmd.cmd + ' ' : cmd.cmd);
-                      inputRef.current?.focus();
-                    }}
-                  >
-                    <div className="flex space-x-3">
-                      <span className="font-bold text-[var(--theme-color)] transition-colors">{cmd.cmd}</span>
-                      <span className="opacity-50 text-xs text-white font-mono">{cmd.usage}</span>
-                    </div>
-                    <span className="opacity-40 text-xs text-white">{cmd.desc}</span>
-                  </div>
-                ))}
-                {COMMANDS.filter(c => c.cmd.startsWith(inputValue.split(' ')[0])).length === 0 && (
-                  <div className="px-3 py-2 text-sm text-white opacity-40 font-mono">Command not found...</div>
+                {/* Argument stage: the dropdown lists the VALUES of the command
+                    being typed rather than the command list it has scrolled
+                    past. `/theme ` therefore shows the presets, and clicking one
+                    switches to it — the mouse path themes never had. Same
+                    `onMouseDown` + `preventDefault()` as the command rows, so
+                    focus stays in the input (invariant #1). */}
+                {completionCtx?.stage === 'arg' ? (
+                  <>
+                    {completionHits.map((value) => {
+                      const swatch = completionCtx.prefix === '/theme' ? PRESETS[value]?.theme : undefined;
+                      const note = argRowNote(completionCtx.prefix, value);
+                      return (
+                        <div key={value} className="flex justify-between items-center px-3 py-2 text-sm hover:bg-white/5 cursor-pointer"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            // Applies where that is presentation-only; otherwise
+                            // it completes and leaves Enter to the user.
+                            if (applyArgOnClick(completionCtx.prefix, value)) {
+                              setInputValue('');
+                              setShowHint(false);
+                            } else {
+                              applyCompletion(value);
+                            }
+                            inputRef.current?.focus();
+                          }}
+                        >
+                          <div className="flex items-center space-x-3 min-w-0">
+                            {swatch && (
+                              <span
+                                className="w-2.5 h-2.5 rounded-sm shrink-0 border border-white/20"
+                                style={{ backgroundColor: swatch }}
+                              />
+                            )}
+                            <span className="font-bold text-[var(--theme-color)] transition-colors truncate">{value}</span>
+                          </div>
+                          {note && <span className="opacity-40 text-xs text-white shrink-0 ml-2">{note}</span>}
+                        </div>
+                      );
+                    })}
+                    {completionHits.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-white opacity-40 font-mono">
+                        No match · {completionCtx.pool.join(' · ')}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {COMMANDS.filter(c => c.cmd.startsWith(inputValue.split(' ')[0])).map((cmd, idx) => (
+                      <div key={idx} className="flex justify-between items-center px-3 py-2 text-sm hover:bg-white/5 cursor-pointer"
+                        onMouseDown={(e) => {
+                          // use mousedown (not click) so the input never loses focus
+                          e.preventDefault();
+                          setInputValue(cmd.usage.includes('<') || cmd.usage.includes('[') ? cmd.cmd + ' ' : cmd.cmd);
+                          inputRef.current?.focus();
+                        }}
+                      >
+                        <div className="flex space-x-3">
+                          <span className="font-bold text-[var(--theme-color)] transition-colors">{cmd.cmd}</span>
+                          <span className="opacity-50 text-xs text-white font-mono">{cmd.usage}</span>
+                        </div>
+                        <span className="opacity-40 text-xs text-white">{cmd.desc}</span>
+                      </div>
+                    ))}
+                    {COMMANDS.filter(c => c.cmd.startsWith(inputValue.split(' ')[0])).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-white opacity-40 font-mono">Command not found...</div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -2923,9 +3269,9 @@ export default function App() {
                         ['EDIT', [
                           ['Enter', 'Edit selected item'],
                           ['Space', 'Toggle complete / promote backlog'],
-                          ['>', 'Add a child to the selected row (rapid entry)'],
+                          ['>', 'Open rapid child entry on the selected row — stays open'],
                           ['Bksp / Del', 'Delete selected item'],
-                          ['Ctrl+Z', 'Undo · tasks, backlog & rituals together (20 steps)'],
+                          ['Ctrl+Z', 'Undo · tasks, backlog & rituals together (20 steps) · keyboard only'],
                         ]],
                         ['ORGANIZE', [
                           ['Alt+↑/↓', 'Reorder among siblings (mouse: carets / Alt+wheel)'],
@@ -2950,8 +3296,7 @@ export default function App() {
                   {helpTab === 'mouse' && (
                     <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-2 gap-y-1.5 break-words text-gray-400">
                       {([
-                        ['Hover', 'Sync focus · [ ⋯ ] chip appears at right'],
-                        ['[ ⋯ ]', 'Hover it to expand the action buttons'],
+                        ['Hover', 'Syncs focus · the [ ⋯ ] chip appears at right; hover it to expand the actions'],
                         ['Click text', 'Toggle complete'],
                         ['Dbl-click', 'Edit that item'],
                         ['[ ^ ][ v ]', 'Move row — ghost previews, then lands · Esc aborts'],
@@ -2959,9 +3304,8 @@ export default function App() {
                         ['[ + ]', 'Add a child under that row'],
                         ['[ » ] [ « ]', 'Demote / promote — the subtree moves intact'],
                         ['[ x ]', 'Delete item'],
-                        ['Missing btn', `An action illegal here is hidden (${MAX_DEPTH}-level cap, first row)`],
-                        ['Depth cues', 'Indent + the left rule · [1] top, [ ] level 2, [·] level 3'],
                         ['[ > ]', 'Promote (backlog only)'],
+                        ['/ menu', 'Type / for the command list · then a space for its values — click to apply'],
                         ['Drag ball', 'Reposition widget'],
                         ['Tray icon', 'Left-click toggles · right-click menu'],
                       ] as const).map(([k, d]) => (
@@ -2979,8 +3323,8 @@ export default function App() {
                           <div className="text-gray-300 font-bold">{c.usage}</div><div>{c.desc}</div>
                         </React.Fragment>
                       ))}
-                      <div className="text-gray-300 font-bold">&gt; or - &lt;msg&gt;</div><div>Add child · selected row, else last task</div>
-                      <div className="text-gray-300 font-bold">→ / Tab</div><div>Accept ghost autocomplete</div>
+                      <div className="text-gray-300 font-bold">&gt; or - &lt;msg&gt;</div><div>One child, in one line · selected row, else last task</div>
+                      <div className="text-gray-300 font-bold">→ / Tab</div><div>Accept the ghost · completes commands and their values</div>
                     </div>
                   )}
 
@@ -3051,15 +3395,28 @@ export default function App() {
                         <div>One-time, today only — /deadline HH:MM, auto-clears at day rollover</div>
                         <div className="text-gray-300 font-bold">Backlog</div>
                         <div>Persists across days (never auto-cleared) · items age with ·Nd tags · ⌁ surfaces the oldest 7d+ item once daily · amber warning at 14d+</div>
-                        <div className="text-gray-300 font-bold">Storage</div><div>Local only — mirrored to Documents/TerminalTasks/state.json</div>
-                        <div className="text-gray-300 font-bold">Daily log</div><div>Documents/TerminalTasks/*.md (auto-archived at day change)</div>
+                        <div className="text-gray-300 font-bold">Storage</div><div>Local only — mirrored to Documents/{DATA_DIR}/state.json</div>
+                        <div className="text-gray-300 font-bold">Daily log</div><div>Documents/{DATA_DIR}/*.md (auto-archived at day change)</div>
                         <div className="text-gray-300 font-bold">Startup</div>
                         <div>{autostartOn === null
                           ? <span className="text-gray-500">unavailable on this system</span>
                           : autostartOn
                           ? <>Launches at login <span className="text-gray-600">(default) — /startup off to disable</span></>
                           : <>Does not launch at login <span className="text-gray-600">— /startup on to enable</span></>}</div>
-                        <div className="text-gray-300 font-bold">Theme</div><div>/theme {PRESET_NAMES.join(' · ')} · glow ramps over the 2h before the deadline (/theme ramp off)</div>
+                        <div className="text-gray-300 font-bold">Theme</div>
+                        <div>
+                          {/* Generated from PRESET_NAMES so this line cannot drift
+                              out of step with the preset table. */}
+                          {PRESET_NAMES.map((n, i) => (
+                            <React.Fragment key={n}>
+                              {i > 0 && <span className="text-gray-600"> · </span>}
+                              <span className={n === themeName ? 'text-[var(--theme-color)]' : undefined}>{n}</span>
+                            </React.Fragment>
+                          ))}
+                          <span className="text-gray-600"> — /theme {'<name>'}, or type /theme and pick. A unique prefix is enough (/theme {PRESET_NAMES[PRESET_NAMES.length - 1]?.[0]}). Glow ramps over the 2h before the deadline; /theme ramp off stops it.</span>
+                        </div>
+                        <div className="text-gray-300 font-bold">Rows</div>
+                        <div>Depth reads as indent + the left rule · [1] top, [ ] level 2, [·] level 3. An action that is illegal on a row (the {MAX_DEPTH}-level cap, the first row) is hidden rather than greyed.</div>
                       </div>
                     </div>
                   )}

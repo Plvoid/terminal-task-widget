@@ -18,7 +18,28 @@ html, body, #root {
 
 :root {
   background-color: #000;
-  color: #00ff00;
+
+  /* Was a hardcoded `#00ff00`. This is not the colour of anything on screen —
+     every text-bearing element sets its own — but it IS the value a freshly
+     inserted element animates FROM.
+     `color` is inherited, so when the panel subtree mounts, each element in it
+     resolves the inherited value first and then transitions to its own colour.
+     Eleven elements carry `transition-colors duration-1000` (for the deadline
+     ramp glide), so each one spent a full second easing from this literal to
+     its real colour on every single panel open.
+     Bisected by temporarily setting this to magenta: the flash turned magenta
+     under all three presets, which also proved nothing renders this value at
+     rest — the UI was never permanently magenta, only the flash was.
+     It went unnoticed for so long because `#00ff00` is close enough to the
+     `default` preset's identity green to read as a shrug; on `mono` and `ice`
+     it is the whole UI flashing the wrong colour.
+     Pointing it at the live theme makes the animation start and end on the same
+     value, so there is nothing left to see. `--theme-color` is mirrored onto
+     <html> by a useLayoutEffect in App.tsx — that mirror is what makes this
+     rule resolvable, and removing it would bring the flash back. The literal
+     fallback covers the frames before React's first commit, when nothing is
+     rendered anyway. */
+  color: var(--theme-color, hsl(142, 70%, 45%));
 }
 
 .no-scrollbar::-webkit-scrollbar {
@@ -45,11 +66,9 @@ html, body, #root {
 @keyframes soft-breathe {
   0%, 100% {
     opacity: 0.85;
-    filter: brightness(1);
   }
   50% {
     opacity: 1;
-    filter: brightness(1.3);
   }
 }
 .animate-soft-breathe {
