@@ -30,9 +30,8 @@ desktop.ini
 *.sln
 *.sw?
 
-# ---- Local agent / tool settings ----
-.claude/settings.local.json
-**/.claude/settings.local.json
+# Local editor/tool config is excluded via .git/info/exclude, which is not
+# tracked — keeping those names out of the published tree.
 
 # ---- Local runtime data & secrets (never commit) ----
 .env
