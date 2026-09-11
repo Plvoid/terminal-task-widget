@@ -23,7 +23,8 @@
       "skipTaskbar": true,
       "resizable": false,
       "minWidth": 50,
-      "minHeight": 50
+      "minHeight": 50,
+      "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IntensiveWakeUpThrottling --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
     }
   ],
     "security": {
