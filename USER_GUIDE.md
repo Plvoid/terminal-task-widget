@@ -13,7 +13,7 @@ When collapsed, the widget is a 60×60 floating ball docked at the screen edge. 
 - **`>_`** — empty day, nothing loaded.
 - **Glow color** — green when relaxed, shifting toward red over the last 2 hours before your deadline. Red means overdue.
 
-Click the ball to open the panel. Drag it to reposition. The tray icon does the same jobs: left-click toggles the panel, right-click gives Open / Hide / Reset Position / Quit.
+Click the ball to open the panel. Drag it to reposition. The tray icon does the same jobs: left-click toggles the panel, right-click gives Open / Hide / Reset Position / Restart UI / Restart App / Quit.
 
 **Global hotkey**: `Alt+X` (default) shows/hides the widget from anywhere. Rebind it with `/shortcut`.
 
@@ -28,7 +28,7 @@ Everything you do flows through the `>` prompt at the bottom:
 - Hover any row → a small `[ ⋯ ]` chip appears at its right edge; hover the chip to expand the action buttons (`[^][v][+][x]`). The chip stays tiny so long task text remains readable. Buttons that would be illegal on that row simply aren't drawn — no `[ + ]` on a third-level row, no `[ « ]` on a top-level task.
 - The prompt changes color to tell you what mode you're in: **amber `edit>`** while editing, **cyan `sub#3>`** while chaining subtasks.
 
-The panel auto-collapses when your mouse leaves it (unless you're typing). `Esc` also steps you back: cancel mode → deselect → collapse.
+The panel collapses as soon as it loses focus — click another window, or anywhere outside it, and it drops back to the ball. `Esc` steps you back a level at a time instead: cancel mode → deselect → collapse.
 
 ## 3. Working with Tasks
 
@@ -174,4 +174,8 @@ Back up that folder and you've backed up the widget. Delete the app and the fold
 - Park the widget on a screen edge; `Alt+X` in, type, `Esc` out — capture in under 2 seconds.
 - Use `/daily` for morning rituals and let the streak gauge guilt you kindly.
 - The backlog age tags are intentional pressure: amber items are asking to be promoted or deleted.
-- If the ball ever seems missing after sleep/monitor changes, it self-heals within seconds; tray → Reset Position is the manual override.
+- If the ball ever seems missing after a monitor change or a short sleep, it self-heals within
+  seconds. If it does not — most likely after the machine has been hibernating for days — work
+  down the tray menu: **Reset Position** re-docks it and forces it back in front, **Restart UI**
+  reloads the interface, and **Restart App** relaunches. Your tasks survive all three; they are
+  on disk, not only in the app.

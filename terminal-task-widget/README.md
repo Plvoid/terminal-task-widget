@@ -39,7 +39,7 @@ CSS variable.
 ## Layout
 
 ```
-src/App.tsx              virtually all app logic — single file, ~3200 lines
+src/App.tsx              virtually all app logic — single file, ~3,440 lines
 src/App.css              animations and the styles Tailwind does not own
 src-tauri/src/lib.rs     tray, plugin registration, Rust entry point
 src-tauri/tauri.conf.json  window model, bundle identifier, version

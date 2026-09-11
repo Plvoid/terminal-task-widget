@@ -110,7 +110,7 @@ No cloud, no account, no telemetry.
 ├── AGENTS.md                  # orientation for contributors & coding agents
 ├── USER_GUIDE.md / .pdf       # end-user manual (the .pdf is generated from the .md)
 └── terminal-task-widget/
-    ├── src/App.tsx            # ~3340 lines: virtually all app logic
+    ├── src/App.tsx            # ~3,440 lines: virtually all app logic
     ├── src/App.css            # animations & the styles Tailwind does not own
     ├── src-tauri/src/lib.rs   # tray, plugins, Rust entry
     └── src-tauri/tauri.conf.json

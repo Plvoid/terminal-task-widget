@@ -32,7 +32,7 @@ needs **WebView2 ≥ 111**, because theme transparency depends on CSS `color-mix
 
 ## The one structural fact
 
-`src/App.tsx` is a single ~3,300-line file holding virtually all application logic. That is
+`src/App.tsx` is a single ~3,440-line file holding virtually all application logic. That is
 deliberate, and it has one consequence worth stating plainly: **concurrent edits to it
 collide.** Work sequentially, type-check between steps, and commit in small pieces. If you
 are coordinating parallel work, parallelise across *tasks*, not across this file.

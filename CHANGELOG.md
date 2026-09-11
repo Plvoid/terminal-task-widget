@@ -7,6 +7,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`Restart UI` and `Restart App` in the tray menu.** If the widget's interface stops responding
+  — which is what "the ball vanished and nothing brings it back" actually looks like — `Restart UI`
+  reloads it in place and `Restart App` relaunches the whole thing. Neither loses any tasks.
+
+### Fixed
+
+- **The ball could disappear after the machine had been asleep for days, with no way back except
+  killing and relaunching the app.** Three things were wrong. The interface can be put to sleep by
+  Windows and stop running entirely, so the watchdog that is supposed to bring the ball back was
+  not running either; the app now asks Windows to leave it alone. Every tray command depended on
+  that same sleeping interface, so all of them were dead too; they now do the work themselves.
+  And the one call used to bring the window back does nothing when Windows already believes the
+  window is visible, which is exactly the case here — the app now re-asserts its always-on-top
+  position instead, and does so by itself the moment the machine wakes rather than waiting for you
+  to reach for the tray.
+- **Holding a key no longer runs away with your list.** With a backlog item selected, holding
+  Backspace emptied the backlog one row per repeat, silently — and the very first press did it
+  without any repeat at all, because a backlog row stayed selected while you typed. Typing now
+  releases the selection, and held keys no longer drive deletion, completion or re-nesting.
+- **Typing Chinese, Japanese or Korean no longer fights the panel.** While an input method was
+  composing, `Esc` closed the panel instead of cancelling the composition, the arrow keys moved
+  the row selection instead of picking a candidate, and `Enter` filed the un-converted text as a
+  task. The composing keystrokes now belong to the input method, as they do everywhere else.
+- **`Ctrl+Z` works with CapsLock on**, and on non-Latin keyboard layouts. It was matching the
+  character produced rather than the key pressed, so either one silently disabled undo entirely.
+- **Rebinding the hotkey can no longer leave you with no hotkey at all.** `/shortcut` used to
+  accept combinations it could not actually register — it tore down the working binding first,
+  failed, and saved the broken value, so every later launch failed the same way. It now refuses
+  unusable combinations up front and keeps the old binding, requires a modifier so a bare letter
+  cannot be taken from every other application, and repairs a binding that has stopped working by
+  falling back to `Alt+X`.
+- **A mistyped command is reported instead of becoming a task.** `/hlep` used to create a task
+  called `/hlep`, even while the command menu was saying "command not found".
+- **Right-clicking the ball** no longer drags the window or opens the panel.
+- **A corrupted setting no longer stops the app from starting.** One damaged value could prevent
+  the whole interface from loading, which looked exactly like the ball having vanished.
+- `/deadline 9:30` is stored as `09:30`, and setting a time that has already gone by says so
+  instead of turning the whole panel red with no explanation.
+- `Enter` on an empty editor cancels the edit, rather than doing nothing at all.
+- Warnings are amber now, instead of the colour used for confirmations.
+- Bold text uses the real bold weight instead of a synthesised one.
+- Several status messages were being cut off mid-word; the ones this release touches now fit.
+
+---
+
 ## [0.3.0] — 2026-08-11
 
 *`0.2.0` below means the last published state of `main` — the repository had no tags before
