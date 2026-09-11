@@ -36,6 +36,50 @@ fn dock_point<R: Runtime>(w: &WebviewWindow<R>) -> Option<(f64, f64)> {
     Some(((x + width - BALL).round(), (y + height * 0.382).round()))
 }
 
+/// Pull the window back inside the work area. Mirrors `clampBall()` in App.tsx.
+///
+/// Runs on the tray paths that deliberately do NOT re-dock, because the frontend
+/// reads this position and builds on it: `expandPanel` places the 400x600 panel
+/// from wherever the window currently is, three round-trips before it flips
+/// `modeRef`. A ball left stranded outside the work area therefore grows into a
+/// panel that is mostly off-screen — and "stranded outside the work area" is
+/// precisely the situation the tray recovery exists for.
+///
+/// Doing it here removes the cause instead of racing it: by the time either
+/// frontend chain looks, the position is already legal.
+#[cfg(desktop)]
+fn clamp_into_work_area<R: Runtime>(w: &WebviewWindow<R>) {
+    let Some(mon) = w
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten())
+    else {
+        return;
+    };
+    let sf = mon.scale_factor();
+    if !sf.is_finite() || sf <= 0.0 {
+        return;
+    }
+    let wa = mon.work_area();
+    let (wax, way) = (wa.position.x as f64 / sf, wa.position.y as f64 / sf);
+    let (waw, wah) = (wa.size.width as f64 / sf, wa.size.height as f64 / sf);
+
+    let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) else {
+        return;
+    };
+    let (x, y) = (pos.x as f64 / sf, pos.y as f64 / sf);
+    let (ww, wh) = (size.width as f64 / sf, size.height as f64 / sf);
+
+    // Clamp the far edge first, then the near one, so a window wider than the
+    // work area lands at the origin rather than off the left/top.
+    let nx = x.min(wax + waw - ww).max(wax);
+    let ny = y.min(way + wah - wh).max(way);
+    if (nx - x).abs() > 1.0 || (ny - y).abs() > 1.0 {
+        let _ = w.set_position(LogicalPosition::new(nx.round(), ny.round()));
+    }
+}
+
 /// Drag the window back onto the screen WITHOUT any help from the frontend.
 ///
 /// This exists because `show()` alone cannot recover the case that actually
@@ -68,6 +112,10 @@ fn force_restore<R: Runtime>(w: &WebviewWindow<R>, redock: bool) {
         if let Some((x, y)) = dock_point(w) {
             let _ = w.set_position(LogicalPosition::new(x, y));
         }
+    } else {
+        // Not re-docking is not the same as leaving it anywhere: see
+        // clamp_into_work_area.
+        clamp_into_work_area(w);
     }
 
     // SetForegroundWindow is the strongest available "come to the front", and
@@ -77,7 +125,31 @@ fn force_restore<R: Runtime>(w: &WebviewWindow<R>, redock: bool) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // MUST be the first plugin registered — the plugin's own documentation is
+    // explicit about it, so that it runs before anything else can interfere.
+    //
+    // What it buys, beyond the obvious: relaunching the exe is what a user
+    // actually does when the ball has vanished, and until now that started a
+    // SECOND copy. Both copies share one WebView2 profile and therefore one
+    // geek-hotkey, so the newcomer would fail to claim the hotkey the original
+    // still held, and (before the fix in App.tsx) persist a fallback over the
+    // user's own binding. Now that same relaunch is delivered to the surviving
+    // process as a repair request instead.
+    //
+    // Deliberately force_restore only, not reload: the common accidental case
+    // is autostart having already launched it and the user clicking the desktop
+    // shortcut out of habit, and that must not throw away an open editor. A
+    // genuinely dead webview is one click away on the tray's Restart UI.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            force_restore(&w, true);
+        }
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init());
