@@ -894,6 +894,11 @@ export default function App() {
   backlogRef.current = backlog;
   const dailyRef = useRef(dailyTemplates);
   dailyRef.current = dailyTemplates;
+  // The archive needs one too, for the same reason the other three do: the day
+  // rollover runs from a `[]`-deps effect, so its closure is frozen at mount
+  // and cannot read state at all.
+  const archiveRef = useRef<any[]>(_archiveLogs);
+  archiveRef.current = _archiveLogs;
 
   // The positional selection, re-derived from the live tree every render, so a
   // mutation anywhere re-addresses it instead of leaving it on a slot that now
@@ -1477,9 +1482,33 @@ export default function App() {
       const lastActiveDate = localStorage.getItem('geek-last-date');
 
       if (lastActiveDate && lastActiveDate !== todayStr) {
-        // Another load site: the rollover re-reads localStorage directly.
-        const saved = normalizeTree(JSON.parse(localStorage.getItem('geek-tasks') || '[]')).tasks;
-        const savedBacklog = normalizeFlat(JSON.parse(localStorage.getItem('geek_backlog') || '[]'));
+        // Reads the REFS, not localStorage. This used to re-read localStorage,
+        // which made it the fourth normalizeTree load site - and a
+        // disaster-recovery-shaped trap.
+        //
+        // The restore effect writes `geek-last-date` from the mirror
+        // SYNCHRONOUSLY, but the restored tasks only reach localStorage when
+        // the persistence effect runs - and passive effects are scheduled
+        // after paint, so a focus event can be delivered in between. On that
+        // path this saw last-date = yesterday with `geek-tasks` still absent,
+        // read '[]', carried nothing over, and then the persistence effect
+        // wrote that empty list to localStorage and, 800ms later, over the
+        // very mirror it had just been restored from. Total loss, no recovery,
+        // and the window sits on the boot path: init() calls show(), and
+        // showing the window produces a focus event.
+        //
+        // The refs are assigned during render AND by the restore, so they are
+        // never behind the way localStorage can be. Normalisation is not
+        // needed here any more either: whatever is in the refs already came
+        // through a load boundary.
+        //
+        // Deep-copied deliberately. normalizeTree used to hand back a fresh
+        // tree, so everything below - including the node references that end
+        // up inside the archive entry - was detached from live state. Reading
+        // a ref would alias it instead, and aliasing between history/archive
+        // and the live tree is exactly what caused an earlier data-loss bug.
+        const saved: Task[] = JSON.parse(JSON.stringify(tasksRef.current));
+        const savedBacklog: Task[] = JSON.parse(JSON.stringify(backlogRef.current));
 
         // Leaves for the archive entry (flat, what LOG renders and counts),
         // the pruned tree for the markdown (hierarchy, recursive emitter).
@@ -1487,7 +1516,7 @@ export default function App() {
         // actually means. See completedLeaves / completedTree.
         const doneLeaves = completedLeaves(saved);
         if (doneLeaves.length > 0) {
-          const existing = JSON.parse(localStorage.getItem('geek-archive') || '[]');
+          const existing = archiveRef.current;
           // Replace an entry for this date rather than appending a second one.
           // The LOG tab and weekStats both iterate ENTRIES, not dates, so a
           // duplicate showed the day twice and double-counted it in the 7-day
@@ -1498,6 +1527,7 @@ export default function App() {
           const newArchive = at >= 0
             ? existing.map((e: any, i: number) => (i === at ? entry : e))
             : [...existing, entry];
+          archiveRef.current = newArchive;
           setArchiveLogs(newArchive);
           localStorage.setItem('geek-archive', JSON.stringify(newArchive));
           exportDailyLog(lastActiveDate, completedTree(saved), savedBacklog);
@@ -1510,7 +1540,7 @@ export default function App() {
         const remaining = carryOver(saved);
 
         // Reseed daily rituals for the new day (skip ones already carried over)
-        const templates: string[] = JSON.parse(localStorage.getItem('geek-daily') || '[]');
+        const templates: string[] = dailyRef.current;
         const reseeded = templates
           .filter(t => !remaining.some((r: Task) => r.text === t))
           .map(t => ({ id: crypto.randomUUID(), text: t, completed: false, subtasks: [] }));
@@ -1571,7 +1601,7 @@ export default function App() {
           backlogRef.current = b;
           setBacklog(b);
         }
-        if (Array.isArray(s.archive)) setArchiveLogs(s.archive);
+        if (Array.isArray(s.archive)) { archiveRef.current = s.archive; setArchiveLogs(s.archive); }
         if (typeof s.deadline === 'string') setDeadline(s.deadline);
         if (typeof s.hotkey === 'string' && s.hotkey) setHotkey(s.hotkey);
         if (typeof s.theme === 'string') setThemeName(PRESETS[s.theme] ? s.theme : 'default');
