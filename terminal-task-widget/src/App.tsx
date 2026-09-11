@@ -416,15 +416,6 @@ const clampBall = (wa: WorkArea, x: number, y: number) => ({
 // user-facing surface shows the short form instead.
 const displayShortcut = (s: string) => s.replace(/CommandOrControl/g, 'Ctrl');
 
-function normalizeShortcut(key: string): string {
-  const parts = key.split('+');
-  return parts.map(p => {
-    const t = p.trim();
-    if (t.length === 1) return t.toUpperCase();
-    return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
-  }).join('+');
-}
-
 // Physical key -> the token the shortcut parser is KNOWN to accept.
 // Deliberately a narrow whitelist: `Alt+X` is the shipped default and proves
 // the bare-letter form works, and Space was already in the recorder. Anything
@@ -435,10 +426,52 @@ function normalizeShortcut(key: string): string {
 // under an IME and "Dead" for a dead key, none of which can be parsed.
 function keyTokenFromCode(code: string): string | null {
   if (/^Key[A-Z]$/.test(code)) return code.slice(3);          // KeyX -> X
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);        // Digit3 -> 3
   if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;     // F1..F24
   if (code === 'Space') return 'Space';
   return null;
 }
+
+// Combos the OS or an IME owns. The probe cannot refuse these - RegisterHotKey
+// is perfectly happy to hand them over - but taking any of them breaks
+// something the user needs more than this widget.
+const RESERVED_SHORTCUTS = ['Alt+F4', 'Alt+Space', 'CommandOrControl+Space'];
+
+// The only shape the recorder can emit. Anything stored that does not match it
+// came from the pre-fix recorder (which built combos from `e.key`, so
+// Ctrl+Shift+3 became the unparseable "CommandOrControl+Shift+#") or from a
+// hand-edited state.json.
+//
+// This exists so that registration failure no longer has to be diagnosed from
+// its outcome. `register` fails for two unrelated reasons and the catch cannot
+// tell them apart: a malformed value, which is deterministic and must be
+// replaced, or the combo being held by another process, which is transient and
+// must NOT be. Falling back on both lost custom bindings permanently, because
+// the fallback was persisted. Shape is checkable at load, with no IPC and no
+// ambiguity, which leaves the catch free to simply keep the value.
+const HOTKEY_SHAPE = /^(CommandOrControl\+)?(Alt\+)?(Shift\+)?([A-Z0-9]|F([1-9]|1[0-9]|2[0-4])|Space)$/i;
+const loadHotkey = (raw: string | null | undefined): string =>
+  raw && HOTKEY_SHAPE.test(raw) ? raw : 'Alt+X';
+
+// Chromium RE-DISPATCHES the key that ENDED a composition, after the
+// composition is already over, so the second copy carries isComposing=false and
+// no IME guard can see it. Measured on Microsoft Pinyin, one Esc press:
+//
+//   keydown "Process" isComposing=true   <- the IME gets it
+//   compositionupdate ""                 <- composition cleared
+//   compositionend ""
+//   keydown "Escape"  isComposing=false  <- and then the page gets it too
+//
+// So cancelling a mistyped pinyin also ran the app's Esc ladder: it cleared the
+// row selection, or collapsed the panel outright when nothing was selected -
+// which is why it looked intermittent. The same re-dispatch explains an arrow
+// key appearing to jump to the first task: Esc ended the composition, and the
+// arrow that followed was a genuine one.
+//
+// Timing is the ONLY discriminator - identical key, identical keyCode,
+// isComposing false on both. The re-dispatch lands in the same tick, so this
+// window is enormously generous, and still far below a deliberate second press.
+const COMPOSITION_TAIL_MS = 100;
 
 let shortcutTaskQueue = Promise.resolve();
 
@@ -793,7 +826,7 @@ export default function App() {
     return PRESETS[saved] ? saved : 'default';
   });
   const [rampOn, setRampOn] = useState<boolean>(() => localStorage.getItem('geek-ramp') !== 'off');
-  const [hotkey, setHotkey] = useState<string>(() => localStorage.getItem('geek-hotkey') || 'Alt+X');
+  const [hotkey, setHotkey] = useState<string>(() => loadHotkey(localStorage.getItem('geek-hotkey')));
   // null = not yet read, or the platform refused the query (portable exe, locked-down box)
   const [autostartOn, setAutostartOn] = useState<boolean | null>(null);
   // Single selection replacing the old index/subIndex/backlogIndex trio.
@@ -814,6 +847,32 @@ export default function App() {
   const leaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ballPosRef = useRef<PhysicalPosition | null>(null);
   const dragRef = useRef({ x: 0, y: 0, isDragging: false });
+  const dragStartedAt = useRef(0);
+  const dragEndedAt = useRef(0);
+
+  // `isDragging` with an expiry, and it must be read through here.
+  //
+  // startDragging() hands the drag to Windows, which usually swallows the
+  // pointerup - so handleBallPointerUp, the only thing that cleared the flag,
+  // often never ran. A stuck `true` makes ensureBallVisible return on its first
+  // line forever: the ball sits wherever it was dropped, half off-screen, and
+  // only tray Reset (which bypasses the watchdog) brings it back. Reported
+  // three times.
+  //
+  // Third flag in this file to strand something (the shortcut recorder killed
+  // the hotkey, expandingUntil would have killed the watchdog), so this one is
+  // bounded too. No real drag lasts 20 seconds, and the cost of being wrong is
+  // one watchdog tick during an unusually slow drag.
+  const isDraggingNow = () =>
+    dragRef.current.isDragging && Date.now() - dragStartedAt.current < 20000;
+
+  // Every exit from a drag goes through here, so the "was that a click?" answer
+  // has one source.
+  const endBallDrag = () => {
+    if (!dragRef.current.isDragging) return;
+    dragRef.current.isDragging = false;
+    dragEndedAt.current = Date.now();
+  };
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -824,6 +883,12 @@ export default function App() {
   // Ref mirror for the global-shortcut callback (registered once per hotkey,
   // so its closure would otherwise see a stale value)
   const isRecordingRef = useRef(false);
+  const compositionEndedAt = useRef(0);
+  // A DEADLINE, not a boolean. expandPanel is async and can throw, and a stuck
+  // `true` would disable the ball watchdog for the rest of the session — the
+  // exact stranding shape that killed the hotkey (the recorder) and can kill
+  // the watchdog (isDragging). A timestamp cannot strand: it expires by itself.
+  const expandingUntil = useRef(0);
   const [tempShortcut, setTempShortcut] = useState('');
   const [_archiveLogs, setArchiveLogs] = useState<any[]>(() => {
     // Same reasoning as geek-daily above.
@@ -1009,19 +1074,25 @@ export default function App() {
   // the same failure and the user was left with NO hotkey at all, with no clue
   // that a bare `/shortcut` + Enter resets it. Confirmed from real use.
   const verifyAndSaveShortcut = (candidate: string) => {
-    const normalized = normalizeShortcut(candidate);
+    // Compared case-insensitively rather than through a normaliser. The
+    // recorder emits one canonical shape and HOTKEY_SHAPE vets what is loaded,
+    // so the only variation left is a hand-edited state.json.
+    //
     // Probing the combo that is ALREADY bound would unregister it and then
     // setHotkey(sameValue) is a no-op, so the effect never re-registers it.
-    if (normalized === normalizeShortcut(hotkey)) {
+    if (candidate.toLowerCase() === hotkey.toLowerCase()) {
       postNotice('[..] already bound');
       return;
     }
     shortcutTaskQueue = shortcutTaskQueue.then(async () => {
+      let probeHeld = false;
       try {
-        if (await isRegistered(normalized)) await unregister(normalized);
+        if (await isRegistered(candidate)) await unregister(candidate);
         // A no-op handler: this is a parse + availability probe, nothing more.
-        await register(normalized, () => {});
-        await unregister(normalized);
+        await register(candidate, () => {});
+        probeHeld = true;
+        await unregister(candidate);
+        probeHeld = false;
         // Only now. The effect does the real registration.
         setHotkey(candidate);
         postNotice(`[OK] ${displayShortcut(candidate)}`);
@@ -1029,6 +1100,12 @@ export default function App() {
         // Unparseable, or already owned by another application. Either way the
         // existing hotkey was never touched and still works.
         postNotice('[!] bind failed');
+      } finally {
+        // If the probe registered but releasing it threw, the combo stays
+        // claimed process-wide by a handler that does nothing - globally dead,
+        // invisible to the user, and only cleared if they happen to record the
+        // same combo again.
+        if (probeHeld) { try { await unregister(candidate); } catch { /* nothing left to try */ } }
       }
     });
   };
@@ -1122,6 +1199,9 @@ export default function App() {
       return;
     }
 
+    // Claimed for the duration of the opening sequence; see stillBall().
+    expandingUntil.current = Date.now() + 3000;
+
     const appWindow = getCurrentWindow();
     const targetWidth = 400;
     const targetHeight = 600;
@@ -1162,6 +1242,7 @@ export default function App() {
       console.warn("OS focus IPC interrupted, but continuing...", error);
     }
     setIsExpanded(true);
+    expandingUntil.current = 0;
     focusTimerRef.current = setTimeout(() => inputRef.current?.focus(), 120);
   };
 
@@ -1170,6 +1251,20 @@ export default function App() {
     if (collapseTimer.current) return;             // already closing
     commitRef.current();                           // land any pending caret move
     if (leaveTimeout.current) { clearTimeout(leaveTimeout.current); leaveTimeout.current = null; }
+
+    // The recorder cannot outlive the panel that hosts it. While
+    // isRecordingShortcut is true the global-shortcut callback returns early by
+    // design, so a stranded recorder silently kills the hotkey - and the only
+    // way out was to reopen the panel and press Esc, which nobody would guess.
+    // Reached for real: Alt+Space during recording pops the Windows system
+    // menu (JS preventDefault cannot stop that in WebView2), the menu takes
+    // focus, blur collapses the panel, and Alt+X was dead from then on.
+    // Same shape as the stale isDragging under S1: a flag that disables a
+    // recovery path, cleared only on a path that may never run.
+    if (isRecordingRef.current) {
+      setIsRecordingShortcut(false);
+      setTempShortcut('');
+    }
 
     setIsClosing(true);                            // play exit animation first
     inputRef.current?.blur();
@@ -1248,6 +1343,7 @@ export default function App() {
     const dy = Math.abs(e.clientY - dragRef.current.y);
     if (dx > 5 || dy > 5) {
       dragRef.current.isDragging = true;
+      dragStartedAt.current = Date.now();
       getCurrentWindow().startDragging();
     }
   };
@@ -1258,10 +1354,14 @@ export default function App() {
     // must not end that drag.
     if (e.button !== 0) return;
     const wasDragging = dragRef.current.isDragging;
-    dragRef.current.isDragging = false; // reset — a stale true blocks the watchdog
-    if (!wasDragging) {
-      expandPanel();
-    }
+    endBallDrag();
+    if (wasDragging) return;
+    // A pointerup can still arrive after the OS already ended the drag and
+    // pointer capture was lost - by then isDragging is false, so without this
+    // the release would read as a click and open the panel. Dragging the ball
+    // must never open the panel.
+    if (Date.now() - dragEndedAt.current < 400) return;
+    expandPanel();
   };
 
   // Watchdog: after standby/wake or monitor changes, Windows can strand the
@@ -1276,7 +1376,13 @@ export default function App() {
     // opening panel back to 60x60 while isExpanded is already true, leaving a
     // panel clipped into a small square.
     const stillBall = () =>
-      modeRef.current === 'ball' && !collapseTimer.current && !dragRef.current.isDragging;
+      modeRef.current === 'ball' && !collapseTimer.current && !isDraggingNow()
+      // expandPanel MOVES the window before it flips modeRef, so modeRef alone
+      // does not cover the opening panel's positioning round-trips. Without
+      // this, a ball stranded outside the work area could be clamped by the
+      // watchdog while expandPanel was placing the panel from the stranded
+      // coordinates — and the panel then grew 340px off-screen.
+      && Date.now() >= expandingUntil.current;
     if (!stillBall()) return;
 
     const appWindow = getCurrentWindow();
@@ -1420,7 +1526,7 @@ export default function App() {
     if (!isExpanded) return;
     if (!localStorage.getItem('geek-autostart-announce')) return;
     localStorage.removeItem('geek-autostart-announce');
-    postNotice('[OK] launch at login: ON · /startup off to disable');
+    postNotice('[OK] autostart on · /about');
   }, [isExpanded]);
 
   useEffect(() => {
@@ -1445,7 +1551,26 @@ export default function App() {
   // so the 45s tick self-heals shortly after resume; visibility/focus events
   // give an immediate check the moment the webview comes back.
   useEffect(() => {
-    const id = setInterval(() => { ensureBallVisible(); }, 45000);
+    // A wake is detected from a CLOCK GAP, not from an event.
+    //
+    // The topmost re-assert used to hang on `visibilitychange`, and this window
+    // may never receive it: collapsing is a resize rather than a hide, an
+    // always-on-top window is never occluded, and `--disable-backgrounding-
+    // occluded-windows` — added in the same batch, for S1 — switches off the
+    // occlusion tracking that was the remaining route to a hidden page. A lock
+    // screen produced no such event when measured.
+    //
+    // Timers freeze while the machine sleeps and resume on wake, so an
+    // oversized gap between ticks is the one signal a wake cannot fail to
+    // produce, whatever WebView2 decides about visibility. It fires once per
+    // wake, so the objection to doing this on every heartbeat does not apply.
+    let lastTick = Date.now();
+    const id = setInterval(() => {
+      const now = Date.now();
+      const slept = now - lastTick > 45000 * 2;
+      lastTick = now;
+      ensureBallVisible({ reassertTopmost: slept });
+    }, 45000);
     // Becoming visible again is the one moment the topmost flag is re-asserted
     // - see ensureBallVisible for why it is not on the heartbeat.
     const onVisible = () => {
@@ -1555,6 +1680,16 @@ export default function App() {
         cancelPendingMove();
         tasksRef.current = rolled;
         setTasks(rolled);
+        // Written here, beside the archive entry, rather than left to the
+        // persistence effect. The rollover already hand-writes geek-archive
+        // and geek-last-date synchronously; leaving geek-tasks to a passive
+        // effect meant the three could be observed out of step - last-date
+        // says today, yesterday is archived, and geek-tasks is still
+        // yesterday's list, whose completed items would be archived a second
+        // time tomorrow. Tray "Restart UI" can tear the page down in that
+        // gap, since it calls set_focus() (which runs this) immediately
+        // before reload().
+        localStorage.setItem('geek-tasks', JSON.stringify(rolled));
         resetHistory();
         setDeadline('');
         localStorage.removeItem('geek-deadline');
@@ -1603,7 +1738,7 @@ export default function App() {
         }
         if (Array.isArray(s.archive)) { archiveRef.current = s.archive; setArchiveLogs(s.archive); }
         if (typeof s.deadline === 'string') setDeadline(s.deadline);
-        if (typeof s.hotkey === 'string' && s.hotkey) setHotkey(s.hotkey);
+        if (typeof s.hotkey === 'string' && s.hotkey) setHotkey(loadHotkey(s.hotkey));
         if (typeof s.theme === 'string') setThemeName(PRESETS[s.theme] ? s.theme : 'default');
         if (typeof s.ramp === 'string') setRampOn(s.ramp !== 'off');
         if (Array.isArray(s.daily)) { dailyRef.current = s.daily; setDailyTemplates(s.daily); }
@@ -1612,7 +1747,7 @@ export default function App() {
         // The clamp warning is deferred to the first panel open; the restore
         // confirmation is not worth carrying across a session.
         deferFlattenNotice(restored.flattened);
-        postNotice('[OK] state restored from disk');
+        postNotice('[OK] restored from disk');
       } catch (error) {
         console.error("Disk restore failed:", error);
       }
@@ -1680,15 +1815,13 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
-    const normalizedKey = normalizeShortcut(hotkey);
-
     shortcutTaskQueue = shortcutTaskQueue.then(async () => {
       if (!isMounted) return;
       try {
-        const registered = await isRegistered(normalizedKey);
-        if (registered) await unregister(normalizedKey);
+        const registered = await isRegistered(hotkey);
+        if (registered) await unregister(hotkey);
         if (!isMounted) return;
-        await register(normalizedKey, (event) => {
+        await register(hotkey, (event) => {
           if (event.state === 'Pressed') {
             // While the recorder is open, pressing the CURRENT hotkey must be
             // captured as input, not toggle the panel out from under the user.
@@ -1708,13 +1841,16 @@ export default function App() {
         // does not repeat. Guarded against the obvious loop: if Alt+X is
         // itself what failed, setHotkey('Alt+X') is a no-op and the effect
         // does not re-run.
+        // NO fallback here any more, deliberately. A malformed stored value is
+        // now caught at load by HOTKEY_SHAPE, which leaves only the transient
+        // case: somebody else currently holds the combo. Overwriting the user's
+        // binding for that destroyed it permanently — the fallback was
+        // persisted, and whichever instance was holding the hotkey never wrote
+        // it back. Keeping the value restores the pre-fix property that a
+        // restart recovers, while the load-time check keeps the malformed case
+        // fixed.
         if (!isMounted) return;
-        if (normalizedKey !== 'Alt+X') {
-          setHotkey('Alt+X');
-          postNotice('[ERR] back to Alt+X');
-        } else {
-          postNotice('[ERR] Alt+X in use');
-        }
+        postNotice('[ERR] hotkey in use');
       }
     });
 
@@ -1722,8 +1858,8 @@ export default function App() {
       isMounted = false;
       shortcutTaskQueue = shortcutTaskQueue.then(async () => {
         try {
-          const registered = await isRegistered(normalizedKey);
-          if (registered) await unregister(normalizedKey);
+          const registered = await isRegistered(hotkey);
+          if (registered) await unregister(hotkey);
         } catch (e) {}
       });
     };
@@ -1799,6 +1935,7 @@ export default function App() {
 
   const { total, completed } = countLeaves(tasks);
   const percent = total === 0 ? 0 : Math.round((completed / total) * 100);
+  const progBar = progressRuns(percent);
   // Ball badge counts MAIN tasks (headline items); the progress bar keeps
   // leaf-level granularity so subtask ticks still move PROG.
   const remainingMain = tasks.filter(t => !t.completed).length;
@@ -2219,6 +2356,20 @@ export default function App() {
   const HELP_TABS = ['keys', 'mouse', 'cmds', 'log', 'about'] as const;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Tab must NEVER perform default focus-navigation: the command input is
+    // the app's only keyboard owner, and an unhandled Tab/Shift+Tab walks
+    // focus out of it — escaping the webview's focusables fires a window
+    // blur, which collapses the panel to the ball mid-keystroke.
+    //
+    // Invariant #2 says UNCONDITIONALLY, and it means it. This used to sit
+    // below the IME guard, which returns early - so during composition Tab
+    // escaped the handler entirely. Microsoft Pinyin does not consume Tab, so
+    // Chromium delivered the keydown with isComposing true, committed the
+    // composition, and then ran focus navigation: exactly the failure the
+    // invariant describes. preventDefault during composition costs the IME
+    // nothing, so this is safe to do before anything else.
+    if (e.key === 'Tab') e.preventDefault();
+
     // An IME owns every key while it is composing, and it has to come FIRST -
     // ahead of the help modal and the shortcut recorder, both of which would
     // otherwise eat keys that belong to the candidate window. Without this:
@@ -2228,7 +2379,17 @@ export default function App() {
     // The commit-the-composition Enter also reports isComposing, so the user
     // presses Enter twice - once to convert, once to submit - which is how
     // every other CJK-aware text field behaves.
-    if (e.nativeEvent.isComposing) return;
+    // keyCode 229 catches the keydown that STARTS a composition, which is
+    // dispatched before compositionstart and therefore still reports
+    // isComposing=false. Harmless today only because 'Process' matches no
+    // branch below - that is luck, not design.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+
+    // Escape ONLY, deliberately. Suppressing every key in the tail window would
+    // swallow the deliberate Enter that submits a just-committed word, because
+    // commit does NOT re-dispatch (verified) while cancel does - that would be
+    // trading a real bug for a new one. Widen this only with evidence.
+    if (e.key === 'Escape' && Date.now() - compositionEndedAt.current < COMPOSITION_TAIL_MS) return;
 
     // While the manual is open it owns the keyboard: 1-4 / arrows switch tabs, Esc closes
     if (showHelp) {
@@ -2262,9 +2423,12 @@ export default function App() {
         if (tempShortcut) {
           verifyAndSaveShortcut(tempShortcut);
         } else {
-          // Bare Enter = reset to the default binding
-          setHotkey('Alt+X');
-          postNotice('[OK] hotkey reset to default Alt+X');
+          // Bare Enter = reset to the default binding. Through the probe like
+          // every other commit: if Alt+X is held by something else, the effect
+          // would otherwise unregister the working custom binding first and
+          // then fail, leaving nothing registered at all. The "already bound"
+          // guard inside covers the common case where Alt+X is current.
+          verifyAndSaveShortcut('Alt+X');
         }
         setIsRecordingShortcut(false);
         setTempShortcut('');
@@ -2293,11 +2457,22 @@ export default function App() {
       // in any other application on the machine. F-keys are the exception
       // people actually expect to be able to bind on their own.
       const isFKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(mainKey);
-      if (keys.length === 0 && !isFKey) { postNotice('[!] add a modifier'); return; }
+      // Shift ALONE does not count. `keys.length === 0` let Shift+A through,
+      // the probe accepted it (MOD_SHIFT is a legal RegisterHotKey modifier),
+      // and the machine then lost every capital A to this widget. Shift+Space
+      // is worse: it is the full/half-width toggle in every Chinese IME.
+      // Shift is part of ordinary typing, so it cannot be the thing that makes
+      // a binding safe.
+      const hasRealMod = keys.some(k => k !== 'Shift');
+      if (!hasRealMod && !isFKey) { postNotice('[!] add Ctrl or Alt'); return; }
 
       keys.push(mainKey);
 
       const tauriShortcut = keys.join('+');
+      if (RESERVED_SHORTCUTS.includes(tauriShortcut)) {
+        postNotice('[!] reserved combo');
+        return;
+      }
       setTempShortcut(tauriShortcut);
       setInputValue(`[Confirm?] ${displayShortcut(tauriShortcut)} · Enter=save · Esc=cancel`);
       return;
@@ -2307,8 +2482,6 @@ export default function App() {
     // the app's only keyboard owner, and an unhandled Tab/Shift+Tab walks
     // focus out of it — escaping the webview's focusables fires a window
     // blur, which collapses the panel to the ball mid-keystroke.
-    if (e.key === 'Tab') e.preventDefault();
-
     // Accept ghost completion with → (or Tab) when the caret sits at the end
     if ((e.key === 'ArrowRight' || e.key === 'Tab') && ghost &&
         inputRef.current?.selectionStart === inputValue.length) {
@@ -2603,7 +2776,7 @@ export default function App() {
                 : undefined,
             });
           }
-          postNotice('[OK] daily ritual saved · reseeds every day');
+          postNotice('[OK] ritual saved · daily');
         }
         setInputValue('');
         setShowHint(false);
@@ -2645,7 +2818,7 @@ export default function App() {
             // boot effect replays this against the Run key — see there.
             localStorage.setItem('geek-autostart-pref', want ? 'on' : 'off');
             localStorage.removeItem('geek-autostart-announce');
-            postNotice(`[OK] launch at login: ${want ? 'ON' : 'OFF'}${want === cur ? ' (unchanged)' : ''}`);
+            postNotice(`[OK] autostart ${want ? 'on' : 'off'}${want === cur ? ' (same)' : ''}`);
           } catch (error) {
             console.error("Autostart toggle failed:", error);
             postNotice('[ERR] autostart unavailable');
@@ -2663,7 +2836,7 @@ export default function App() {
           postNotice('[..] nothing to clear');
         } else {
           dispatchTasks([]);
-          postNotice('[OK] cleared · Ctrl+Z restores');
+          postNotice('[OK] cleared · Ctrl+Z');
         }
         setInputValue('');
         return;
@@ -2677,7 +2850,7 @@ export default function App() {
           setSel({ kind: 'backlog', index: 0 });
           setTimeout(() => rowRefs.current.get('b-0')?.scrollIntoView({ block: 'nearest' }), 0);
         } else {
-          postNotice('[..] backlog empty · /l <text> adds');
+          postNotice('[..] empty · /l <text>');
         }
         setInputValue('');
         setShowHint(false);
@@ -2728,7 +2901,7 @@ export default function App() {
               : '[OK] deadline ramp off');
           } else {
             // Bare `/theme ramp` used to fall through to "unknown theme".
-            postNotice('[!] usage: /theme ramp on|off');
+            postNotice('[!] /theme ramp on|off');
           }
         } else {
           setThemeName(head.name);
@@ -2770,7 +2943,7 @@ export default function App() {
           const passed = Number(hh) * 60 + Number(mm) <= now.getHours() * 60 + now.getMinutes();
           postNotice(passed ? `[!] ${padded} passed` : `[OK] deadline ${padded}`);
         } else {
-          postNotice('[ERR] use /deadline HH:MM or /deadline off');
+          postNotice('[ERR] use HH:MM or off');
         }
         setInputValue('');
         setShowHint(false);
@@ -3170,6 +3343,11 @@ export default function App() {
             onPointerDown={handleBallPointerDown}
             onPointerMove={handleBallPointerMove}
             onPointerUp={handleBallPointerUp}
+            // The two events that actually fire when Windows takes the drag
+            // over. Without them the flag was cleared only by a pointerup that
+            // usually never came.
+            onPointerCancel={endBallDrag}
+            onLostPointerCapture={endBallDrag}
           >
             <span className="font-bold text-sm tracking-tighter pointer-events-none transition-colors duration-1000 text-[var(--theme-color)]">
               {tasks.length === 0 ? '>_' : remainingMain > 0 ? remainingMain : '✓'}
@@ -3204,10 +3382,10 @@ export default function App() {
           <div className="px-4 py-2 shrink-0 text-[var(--theme-color)] flex items-center justify-between gap-2">
             <span className="shrink-0">
               {`PROG: [`}
-              <span>{progressRuns(percent).done}</span>
+              <span>{progBar.done}</span>
               {/* 30%, not 25%: /25 was already found invisible on this panel
                   once, when the nesting ancestry border was tuned. */}
-              <span className="opacity-30">{progressRuns(percent).todo}</span>
+              <span className="opacity-30">{progBar.todo}</span>
               {`] ${percent}%`}
             </span>
             {notice && (
@@ -3463,6 +3641,7 @@ export default function App() {
                 value={inputValue}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
+                onCompositionEnd={() => { compositionEndedAt.current = Date.now(); }}
                 onFocus={() => {
                   setIsTyping(true);
                   if (blurTimeoutRef.current) {
