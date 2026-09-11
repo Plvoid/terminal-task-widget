@@ -1,5 +1,58 @@
 @import "tailwindcss";
 @import "@fontsource/jetbrains-mono";
+/* 700 is a separate file. Without it WebView2 synthesises bold for the 24
+   `font-bold` sites (the prompt, the ball's count, the dropdown, help titles),
+   which smears the stroke at 14px on a near-black panel. */
+@import "@fontsource/jetbrains-mono/700.css";
+
+/* Symbols the @fontsource subsets do not ship.
+   ------------------------------------------------------------------------
+   @fontsource slices JetBrains Mono by unicode-range: latin, latin-ext,
+   vietnamese, greek, cyrillic, cyrillic-ext. Between them they stop short of
+   arrows (beyond the two the latin subset happens to list), box drawing,
+   block elements, dingbats and most math operators - which is most of this
+   app's symbol vocabulary: the ball's checkmark, the [ ⋯ ] row chip, the
+   └─ sub-entry hint, the [→] ghost-accept chip, ↻ rituals, ⌁ surfacing, the
+   ← → in the help modal, and the █ of both progress bars.
+
+   Note ░ is NOT among them any more: Consolas turned out not to have it, so
+   it fell past this rule to the CJK face and rendered full-width beside a
+   0.55em █ - one bar, two widths. Both bars now draw with █ alone, dimmed for
+   the unfinished run. See progressRuns() in App.tsx.
+
+   Every one of those was falling through the font stack to Microsoft YaHei
+   and rendering FULL-WIDTH (1em) instead of mono (0.6em): a different
+   typeface at the wrong width, in an app whose whole identity is a terminal.
+   In the progress bar that is ~56px of panel width, taken straight out of
+   the notice beside it (ISSUES A-B13).
+
+   Borrowed from a monospace face Windows always has. Scoped by unicode-range
+   so nothing else is touched, and U+2191/U+2193 are deliberately excluded -
+   the latin subset does cover those, and they should keep coming from the
+   real font. A glyph missing from Consolas simply falls through as before,
+   so this cannot be worse than the status quo.
+
+   MAINTENANCE: adding a new symbol outside these ranges silently reintroduces
+   the bug. To check, list the non-ASCII characters used in App.tsx and
+   confirm each one falls in a range below or in a @fontsource subset. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  src: local("Consolas"), local("Cascadia Mono"), local("Lucida Console");
+  unicode-range: U+2190, U+2192, U+2194-21FF, U+2200-2211, U+2213-2214,
+                 U+2216-22FF, U+2300-23FF, U+2500-257F, U+2580-259F,
+                 U+2700-27BF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  src: local("Consolas Bold"), local("Consolas"), local("Cascadia Mono");
+  unicode-range: U+2190, U+2192, U+2194-21FF, U+2200-2211, U+2213-2214,
+                 U+2216-22FF, U+2300-23FF, U+2500-257F, U+2580-259F,
+                 U+2700-27BF;
+}
 
 *, *::before, *::after {
   outline: none !important;

@@ -425,6 +425,21 @@ function normalizeShortcut(key: string): string {
   }).join('+');
 }
 
+// Physical key -> the token the shortcut parser is KNOWN to accept.
+// Deliberately a narrow whitelist: `Alt+X` is the shipped default and proves
+// the bare-letter form works, and Space was already in the recorder. Anything
+// else is refused at record time rather than discovered at register time -
+// by which point the old binding has already been torn down.
+// Keyed on `e.code` (physical position), never `e.key` (the character the
+// layout produces): e.key made Ctrl+Shift+3 record as "#", reported "Process"
+// under an IME and "Dead" for a dead key, none of which can be parsed.
+function keyTokenFromCode(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);          // KeyX -> X
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;     // F1..F24
+  if (code === 'Space') return 'Space';
+  return null;
+}
+
 let shortcutTaskQueue = Promise.resolve();
 
 const COMMANDS = [
@@ -516,16 +531,30 @@ function countLeaves(tasks: Task[]): { total: number; completed: number } {
   return { total, completed };
 }
 
-function asciiProgress(percent: number, width = 10): string {
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
-  return `PROG: [${"█".repeat(filled)}${"░".repeat(empty)}] ${percent}%`;
+// The bar is ONE character - U+2588 FULL BLOCK - in two brightnesses, rather
+// than █ against ░. Three reasons, in order of how much they cost:
+//
+//  1. ░ is not in Consolas, which is where the unicode-range rules in App.css
+//     borrow the block glyphs from. So ░ fell straight past it to a CJK face
+//     and rendered FULL-WIDTH beside a 0.55em █: one bar, two character
+//     widths, and an empty run that looked far too wide. Reported on sight.
+//  2. One glyph means the bar's total width no longer changes with progress.
+//     Any two-character bar drifts as the ratio shifts unless both glyphs come
+//     from the same face - which is exactly what could not be guaranteed here.
+//  3. Dimming rather than substituting is how this app already signals
+//     secondary information everywhere else.
+//
+// Returns the two runs; the caller renders them as separate spans so the
+// second can carry the opacity. Kept out of JSX so the arithmetic stays here.
+function progressRuns(percent: number, width = 10): { done: string; todo: string } {
+  const filled = Math.min(width, Math.max(0, Math.round((percent / 100) * width)));
+  return { done: '█'.repeat(filled), todo: '█'.repeat(width - filled) };
 }
 
 // The resting identity color, and the one every no-deadline path must land on.
 const THEME_REST = 'hsl(142, 70%, 45%)';
 
-// --- Accent roles (Wave 2 step 1 — PLAN_wave2_themes.md §2) -----------------
+// --- Accent roles (Wave 2 step 1 — notes/archive/PLAN_wave2_themes.md §2) --
 // The four semantic accent roles, lifted out of the ~35 hardcoded Tailwind
 // classes that used to spell them. NOTHING is themeable yet: these are the
 // exact values Tailwind was already emitting, copied out of the built CSS, so
@@ -735,8 +764,14 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [helpTab, setHelpTab] = useState<'keys' | 'mouse' | 'cmds' | 'log' | 'about'>('keys');
   const [dailyTemplates, setDailyTemplates] = useState<string[]>(() => {
-    const saved = localStorage.getItem('geek-daily');
-    return saved ? JSON.parse(saved) : [];
+    // Guarded like loadTasks/loadBacklog. An unguarded throw here happens
+    // during render, so App() never mounts and the BALL NEVER APPEARS - which
+    // the user cannot tell apart from the window bug in ISSUES S1. Losing the
+    // rituals is recoverable; losing the whole app is not.
+    try {
+      const saved = localStorage.getItem('geek-daily');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
   });
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
   // Id, not path: the target has to survive deletes and reorders of OTHER rows
@@ -791,8 +826,11 @@ export default function App() {
   const isRecordingRef = useRef(false);
   const [tempShortcut, setTempShortcut] = useState('');
   const [_archiveLogs, setArchiveLogs] = useState<any[]>(() => {
-    const saved = localStorage.getItem('geek-archive');
-    return saved ? JSON.parse(saved) : [];
+    // Same reasoning as geek-daily above.
+    try {
+      const saved = localStorage.getItem('geek-archive');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
   });
   const [backlog, setBacklog] = useState<Task[]>(() => loadBacklog(localStorage.getItem('geek_backlog')));
   const isFirstRender = useRef(true);
@@ -957,6 +995,38 @@ export default function App() {
   // completed tasks on top of today's list, and after a restore it would revert
   // the restore. Both clear the stack instead of pushing to it.
   const resetHistory = () => { setHistory([]); lastToggleRef.current = null; };
+
+  // Prove a combo registers BEFORE it becomes the saved hotkey.
+  //
+  // The old order was the bug: setHotkey ran first, the effect below tore down
+  // the working binding, the new combo then failed to parse, and the bad value
+  // had already been persisted to geek-hotkey - so every later launch repeated
+  // the same failure and the user was left with NO hotkey at all, with no clue
+  // that a bare `/shortcut` + Enter resets it. Confirmed from real use.
+  const verifyAndSaveShortcut = (candidate: string) => {
+    const normalized = normalizeShortcut(candidate);
+    // Probing the combo that is ALREADY bound would unregister it and then
+    // setHotkey(sameValue) is a no-op, so the effect never re-registers it.
+    if (normalized === normalizeShortcut(hotkey)) {
+      postNotice('[..] already bound');
+      return;
+    }
+    shortcutTaskQueue = shortcutTaskQueue.then(async () => {
+      try {
+        if (await isRegistered(normalized)) await unregister(normalized);
+        // A no-op handler: this is a parse + availability probe, nothing more.
+        await register(normalized, () => {});
+        await unregister(normalized);
+        // Only now. The effect does the real registration.
+        setHotkey(candidate);
+        postNotice(`[OK] ${displayShortcut(candidate)}`);
+      } catch {
+        // Unparseable, or already owned by another application. Either way the
+        // existing hotkey was never touched and still works.
+        postNotice('[!] bind failed');
+      }
+    });
+  };
 
   const postNotice = (msg: string) => {
     setNotice(msg);
@@ -1158,6 +1228,11 @@ export default function App() {
   };
 
   const handleBallPointerDown = (e: React.PointerEvent) => {
+    // Left button only. Right-drag used to move the window and right-release
+    // used to expand the panel, neither of which anything asks for - and a
+    // non-left press arming dragRef is one more way to strand `isDragging`,
+    // which permanently disables the ball watchdog (see ISSUES S1, H2).
+    if (e.button !== 0) return;
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     dragRef.current = { x: e.clientX, y: e.clientY, isDragging: false };
   };
@@ -1172,7 +1247,11 @@ export default function App() {
     }
   };
 
-  const handleBallPointerUp = () => {
+  const handleBallPointerUp = (e: React.PointerEvent) => {
+    // Matches the guard in handleBallPointerDown. Deliberately returns WITHOUT
+    // clearing `isDragging`: a right-button release during a live left drag
+    // must not end that drag.
+    if (e.button !== 0) return;
     const wasDragging = dragRef.current.isDragging;
     dragRef.current.isDragging = false; // reset — a stale true blocks the watchdog
     if (!wasDragging) {
@@ -1183,24 +1262,65 @@ export default function App() {
   // Watchdog: after standby/wake or monitor changes, Windows can strand the
   // collapsed ball off-screen (or a resize can half-apply). Periodically and
   // on visibility/focus resume, clamp it back into the work area and re-show.
-  const ensureBallVisible = async () => {
-    if (modeRef.current !== 'ball' || collapseTimer.current || dragRef.current.isDragging) return;
-    try {
-      const appWindow = getCurrentWindow();
-      const scaleFactor = await appWindow.scaleFactor();
-      const pos = (await appWindow.outerPosition()).toLogical(scaleFactor);
-      const { x, y } = clampBall(await getWorkArea(), pos.x, pos.y);
-      if (Math.abs(x - pos.x) > 1 || Math.abs(y - pos.y) > 1) {
-        await appWindow.setPosition(new LogicalPosition(x, y));
-        ballPosRef.current = null; // old anchor is stale after an OS move
-      }
-      const size = (await appWindow.innerSize()).toLogical(scaleFactor);
-      if (Math.round(size.width) !== BALL || Math.round(size.height) !== BALL) {
-        await appWindow.setSize(new LogicalSize(BALL, BALL));
-      }
-      await appWindow.show();
-    } catch (error) {
-      console.warn("Ball watchdog failed:", error);
+  const ensureBallVisible = async (opts?: { reassertTopmost?: boolean }) => {
+    // Re-checked before EVERY mutating call, not only on the way in.
+    // expandPanel makes three round-trips to Windows before it flips modeRef
+    // to 'panel', and a tray click now calls set_focus() before it emits
+    // tray:open - so this watchdog and a panel opening genuinely run at the
+    // same time. Acting on a reading taken before that flip would resize the
+    // opening panel back to 60x60 while isExpanded is already true, leaving a
+    // panel clipped into a small square.
+    const stillBall = () =>
+      modeRef.current === 'ball' && !collapseTimer.current && !dragRef.current.isDragging;
+    if (!stillBall()) return;
+
+    const appWindow = getCurrentWindow();
+
+    // Each step stands alone. This used to be one try with show() LAST, so a
+    // single failed round-trip skipped show() for the whole tick - and show()
+    // is the step that actually rescues a ball nobody can see.
+    let scaleFactor: number | null = null;
+    try { scaleFactor = await appWindow.scaleFactor(); }
+    catch (error) { console.warn("Ball watchdog: scaleFactor failed", error); }
+
+    if (scaleFactor !== null) {
+      try {
+        const pos = (await appWindow.outerPosition()).toLogical(scaleFactor);
+        const { x, y } = clampBall(await getWorkArea(), pos.x, pos.y);
+        if (stillBall() && (Math.abs(x - pos.x) > 1 || Math.abs(y - pos.y) > 1)) {
+          await appWindow.setPosition(new LogicalPosition(x, y));
+          ballPosRef.current = null; // old anchor is stale after an OS move
+        }
+      } catch (error) { console.warn("Ball watchdog: placement failed", error); }
+
+      try {
+        const size = (await appWindow.innerSize()).toLogical(scaleFactor);
+        if (stillBall() && (Math.round(size.width) !== BALL || Math.round(size.height) !== BALL)) {
+          await appWindow.setSize(new LogicalSize(BALL, BALL));
+        }
+      } catch (error) { console.warn("Ball watchdog: size failed", error); }
+    }
+
+    if (!stillBall()) return;
+    try { await appWindow.show(); }
+    catch (error) { console.warn("Ball watchdog: show failed", error); }
+
+    // show() is ShowWindow(SW_SHOW), and that is a NO-OP on a window Windows
+    // already considers visible - which is exactly the state a long standby
+    // leaves it in when it comes back behind everything else. Dropping and
+    // re-setting always-on-top issues a real SetWindowPos and forces the
+    // z-order to be applied again. Same reasoning as force_restore() in
+    // lib.rs, which is why the tray items can recover what this could not.
+    //
+    // Only on a wake, never on the 45s heartbeat: twice a minute, forever,
+    // this would drop the ball out of the topmost band and back - a visible
+    // blink, and a fight with anything running full-screen. A wake is when
+    // the flag actually gets lost. See the caller.
+    if (opts?.reassertTopmost && stillBall()) {
+      try {
+        await appWindow.setAlwaysOnTop(false);
+        await appWindow.setAlwaysOnTop(true);
+      } catch (error) { console.warn("Ball watchdog: topmost re-assert failed", error); }
     }
   };
 
@@ -1220,14 +1340,17 @@ export default function App() {
     init();
   }, []);
 
-  // Autostart defaults to ON, but only on a genuine first run of a release
-  // build. Three guards, each protecting against a different failure:
-  //   1. `geek-autostart-init` — once-only. Without it we would re-enable on
-  //      every boot and silently overwrite a user who turned it off.
-  //   2. PROD only — in `tauri dev` the plugin registers `current_exe()`,
-  //      i.e. the target/debug binary, leaving a stale Run-key path behind.
-  //   3. Returning users predate the flag, so their existing choice wins;
-  //      presence of task data is the tell that this isn't a first run.
+  // Autostart defaults to ON. Exactly TWO branches, keyed on
+  // `geek-autostart-pref` ('on' | 'off', written only by /startup):
+  //   1. A preference was recorded — replay it against the Run key, in either
+  //      direction. A recorded 'off' is honoured as faithfully as an 'on'.
+  //   2. No preference, and PROD — adopt the default, ON, whatever the install
+  //      history, then record it. The PROD guard is load-bearing: under a dev
+  //      build the plugin registers `current_exe()`, i.e. the target/debug
+  //      binary, leaving a stale Run-key path behind.
+  // The old `returning` heuristic (task data present => not a first run =>
+  // leave alone) is GONE — see the comment on branch 2 below for why, and note
+  // that `geek-autostart-init` is still stamped but no longer read.
   useEffect(() => {
     (async () => {
       try {
@@ -1318,15 +1441,20 @@ export default function App() {
   // give an immediate check the moment the webview comes back.
   useEffect(() => {
     const id = setInterval(() => { ensureBallVisible(); }, 45000);
+    // Becoming visible again is the one moment the topmost flag is re-asserted
+    // - see ensureBallVisible for why it is not on the heartbeat.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') ensureBallVisible();
+      if (document.visibilityState === 'visible') ensureBallVisible({ reassertTopmost: true });
     };
+    // Focus is a much noisier signal (every click on the ball raises it), so
+    // it gets the plain check.
+    const onFocus = () => { ensureBallVisible(); };
     document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
+    window.addEventListener('focus', onFocus);
     return () => {
       clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 
@@ -1543,8 +1671,20 @@ export default function App() {
         });
       } catch (e) {
         console.warn("Shortcut setup interrupted:", e);
-        // Most common cause: the combo is already claimed by another app
-        postNotice(`[ERR] ${displayShortcut(normalizedKey)} failed to register — try /shortcut`);
+        // Self-heal. Without this a bad value persisted in geek-hotkey failed
+        // again on every single launch, so a restart did NOT recover the
+        // hotkey - the symptom that made this worth fixing. Falling back also
+        // rewrites geek-hotkey (via the persistence effect), so the failure
+        // does not repeat. Guarded against the obvious loop: if Alt+X is
+        // itself what failed, setHotkey('Alt+X') is a no-op and the effect
+        // does not re-run.
+        if (!isMounted) return;
+        if (normalizedKey !== 'Alt+X') {
+          setHotkey('Alt+X');
+          postNotice('[ERR] back to Alt+X');
+        } else {
+          postNotice('[ERR] Alt+X in use');
+        }
       }
     });
 
@@ -1785,7 +1925,7 @@ export default function App() {
   // touches the task tree deliberately has no entry below and still needs
   // Enter — a click must never mint an undo entry the user did not ask for.
   //
-  // This is what amends PLAN_wave2_themes.md §5 ("themes are driven by command
+  // This is what amends notes/archive/PLAN_wave2_themes.md §5 ("themes are driven by command
   // only"). The reasoning there cited invariant #1, but #1 forbids stealing
   // KEYBOARD FOCUS, not being clickable: these rows carry the same
   // `onMouseDown` + `preventDefault()` the dropdown has always used, so the
@@ -2049,6 +2189,17 @@ export default function App() {
   const HELP_TABS = ['keys', 'mouse', 'cmds', 'log', 'about'] as const;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // An IME owns every key while it is composing, and it has to come FIRST -
+    // ahead of the help modal and the shortcut recorder, both of which would
+    // otherwise eat keys that belong to the candidate window. Without this:
+    // Esc walked the Esc ladder and collapsed the panel instead of cancelling
+    // the composition, up/down moved the row selection instead of picking a
+    // candidate, and Enter captured the un-converted romaji/pinyin as a task.
+    // The commit-the-composition Enter also reports isComposing, so the user
+    // presses Enter twice - once to convert, once to submit - which is how
+    // every other CJK-aware text field behaves.
+    if (e.nativeEvent.isComposing) return;
+
     // While the manual is open it owns the keyboard: 1-4 / arrows switch tabs, Esc closes
     if (showHelp) {
       e.preventDefault();
@@ -2079,8 +2230,7 @@ export default function App() {
 
       if (e.key === 'Enter') {
         if (tempShortcut) {
-          setHotkey(tempShortcut);
-          postNotice(`[OK] hotkey: ${displayShortcut(tempShortcut)}`);
+          verifyAndSaveShortcut(tempShortcut);
         } else {
           // Bare Enter = reset to the default binding
           setHotkey('Alt+X');
@@ -2106,8 +2256,15 @@ export default function App() {
         return;
       }
 
-      let mainKey = e.key.toUpperCase();
-      if (mainKey === ' ') mainKey = 'Space';
+      const mainKey = keyTokenFromCode(e.code);
+      if (!mainKey) { postNotice('[!] unsupported key'); return; }
+
+      // A bare key would be claimed GLOBALLY - recording "F" means no letter f
+      // in any other application on the machine. F-keys are the exception
+      // people actually expect to be able to bind on their own.
+      const isFKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(mainKey);
+      if (keys.length === 0 && !isFKey) { postNotice('[!] add a modifier'); return; }
+
       keys.push(mainKey);
 
       const tauriShortcut = keys.join('+');
@@ -2157,7 +2314,9 @@ export default function App() {
       return;
     }
 
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    // `e.code`, not `e.key`: CapsLock makes `e.key` 'Z' and a Cyrillic layout
+    // makes it 'я', either of which silently killed undo entirely.
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
       e.preventDefault();
       if (history.length > 0) {
         mouseNavEnabled.current = false;
@@ -2204,6 +2363,17 @@ export default function App() {
     if (text === '' && selTask && nodeAt(tasks, selTask.path)) {
       const path = selTask.path;
 
+      // Key auto-repeat must not drive the mutating keys. A held Backspace
+      // walked down the list deleting one row per repeat, and every repeat of
+      // Space/Tab pushes its own undo snapshot - at ~30 repeats a second that
+      // flushes the 20-deep history (R3), so deleteNode's "Ctrl+Z restores"
+      // notice stops being true. Enter and '>' only open a prompt, so they are
+      // deliberately exempt.
+      if (e.repeat && (e.key === 'Backspace' || e.key === 'Delete' || e.key === ' ' || e.key === 'Tab')) {
+        e.preventDefault();
+        return;
+      }
+
       if ((e.key === 'Backspace' || e.key === 'Delete') && !editingNode) {
         e.preventDefault();
         deleteNode(path);
@@ -2249,6 +2419,14 @@ export default function App() {
 
     if (text === '' && selBack && selBack.index < backlog.length) {
       const bIdx = selBack.index;
+
+      // Same guard as the task branch above. This is the half that was
+      // reported: `/l`, type, backspace the text away, keep holding - and the
+      // backlog emptied one row per repeat with no warning of any kind.
+      if (e.repeat && (e.key === 'Backspace' || e.key === 'Delete' || e.key === ' ')) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === ' ') {
         e.preventDefault();
         const taskToPromote = backlog[bIdx];
@@ -2314,6 +2492,15 @@ export default function App() {
         } else {
           setSubEntryTarget(null);
         }
+        setInputValue('');
+        return;
+      }
+
+      // An empty buffer means "never mind" while an editor is open. It used to
+      // mean nothing at all, leaving `edit>` on screen with no way out but Esc.
+      // Checked BEFORE the bare `!text` return, which would otherwise swallow it.
+      if (!text && editingNode) {
+        setEditingNode(null);
         setInputValue('');
         return;
       }
@@ -2540,8 +2727,18 @@ export default function App() {
           if (deadline) { setDeadline(''); postNotice('[OK] deadline cleared'); }
           else postNotice('[..] no deadline set');
         } else if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(arg)) {
-          setDeadline(arg);
-          postNotice(`[OK] deadline ${arg}`);
+          // The regex accepts `9:30`, which the header then rendered verbatim
+          // as `DL 9:30` next to a zero-padded countdown. Pad on the way in so
+          // there is only ever one stored shape.
+          const [hh, mm] = arg.split(':');
+          const padded = `${hh.padStart(2, '0')}:${mm}`;
+          setDeadline(padded);
+          // Setting a time that is already gone turns the whole UI red at once
+          // with nothing to explain it. Still allowed - it is a legitimate way
+          // to say "this was due"; it just says so out loud now.
+          const now = new Date();
+          const passed = Number(hh) * 60 + Number(mm) <= now.getHours() * 60 + now.getMinutes();
+          postNotice(passed ? `[!] ${padded} passed` : `[OK] deadline ${padded}`);
         } else {
           postNotice('[ERR] use /deadline HH:MM or /deadline off');
         }
@@ -2594,6 +2791,28 @@ export default function App() {
         return;
       }
 
+      // Everything that could match a command has had its turn by now, so a
+      // leading slash here is a typo, not a task. The dropdown already says
+      // "Command not found" while this used to accept it anyway and create a
+      // task called `/hlep`. This is the general case of the bug `/deadline`
+      // was patched for on its own.
+      // Note: matching is still case-SENSITIVE, so `/Help` lands here too. The
+      // fix for that is not a one-liner - `text` is what the edit branch above
+      // writes back into a node, so lower-casing it in place would silently
+      // re-case a task whose own text starts with "/".
+      if (text.startsWith('/')) {
+        // NOTICE LENGTH BUDGET: ~19 characters. Measured, not estimated - see
+        // ISSUES A-B13. The notice shares its row with the progress bar, which
+        // is shrink-0, and the bar is far wider than it looks: its block
+        // characters are not in any @fontsource subset, so they fall back to a
+        // CJK face and render FULL-WIDTH. The budget shrinks further when the
+        // bar reads 100%. Anything longer is silently cut mid-word.
+        postNotice('[!] unknown command');
+        setInputValue('');
+        setShowHint(false);
+        return;
+      }
+
       dispatchTasks([...tasks, { id: crypto.randomUUID(), text, completed: false, subtasks: [] }]);
       // Confirm the capture: pulse the new row and bring it into view
       flashRow(rowKey([tasks.length]));
@@ -2607,7 +2826,13 @@ export default function App() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInputValue(val);
-    if (!val.startsWith('/')) setSel(prev => (prev?.kind === 'task' ? null : prev));
+    // Clears BOTH kinds of selection, not just task. The asymmetry was the
+    // other half of the held-Backspace bug: after `/l` the backlog row stayed
+    // selected while you typed, so the moment the buffer went empty again the
+    // next Backspace deleted it - no repeat required. Once there is text in
+    // the prompt you are no longer acting on the selected row, whichever list
+    // it is in.
+    if (!val.startsWith('/')) setSel(null);
     if (val.startsWith('/')) {
       setShowHint(true);
     } else {
@@ -2947,9 +3172,16 @@ export default function App() {
           </div>
 
           <div className="px-4 py-2 shrink-0 text-[var(--theme-color)] flex items-center justify-between gap-2">
-            <span className="shrink-0">{asciiProgress(percent)}</span>
+            <span className="shrink-0">
+              {`PROG: [`}
+              <span>{progressRuns(percent).done}</span>
+              {/* 30%, not 25%: /25 was already found invisible on this panel
+                  once, when the nesting ancestry border was tuned. */}
+              <span className="opacity-30">{progressRuns(percent).todo}</span>
+              {`] ${percent}%`}
+            </span>
             {notice && (
-              <span className={`text-[11px] truncate animate-modal-in ${notice.startsWith('[ERR]') ? 'text-[var(--accent-danger)]/90' : 'text-[var(--accent-action)]/90'}`}>
+              <span className={`text-[11px] truncate animate-modal-in ${notice.startsWith('[ERR]') ? 'text-[var(--accent-danger)]/90' : notice.startsWith('[!]') ? 'text-[var(--accent-edit)]/90' : 'text-[var(--accent-action)]/90'}`}>
                 {notice}
               </span>
             )}
@@ -2958,7 +3190,15 @@ export default function App() {
           <div
             ref={listRef}
             className="relative flex-1 overflow-y-auto px-4 py-2 space-y-1 no-scrollbar"
-            onMouseLeave={() => setSel(prev => (prev?.kind === 'backlog' ? null : prev))}
+            // Symmetric with the task rows, which clear nothing here, and it
+            // honours the modality guard: leaving the list under a stationary
+            // cursor (a row scrolled out from under it) must not drop a
+            // keyboard-made selection. Previously this fired unconditionally
+            // and only for backlog, so `/l` could lose its highlight silently.
+            onMouseLeave={() => {
+              if (!mouseNavEnabled.current) return;
+              setSel(prev => (prev?.kind === 'backlog' ? null : prev));
+            }}
           >
             {tasks.length === 0 && (
               <div className="text-[var(--theme-color)] opacity-30 italic transition-colors duration-1000">
@@ -3100,7 +3340,7 @@ export default function App() {
             onSubmit={handleSubmit}
             className="shrink-0 px-4 py-2 border-t border-[var(--theme-color)]/20 flex items-center relative transition-colors duration-1000"
           >
-            {showHint && inputValue.startsWith('/') && (
+            {showHint && inputValue.startsWith('/') && !editingNode && subEntryTarget === null && (
               <div className="absolute bottom-full left-0 mb-2 w-full bg-[#111]/95 border border-[var(--theme-color)]/20 rounded-md p-1 shadow-xl z-50 backdrop-blur-md">
                 {/* Argument stage: the dropdown lists the VALUES of the command
                     being typed rather than the command list it has scrolled
@@ -3331,7 +3571,10 @@ export default function App() {
                   {helpTab === 'log' && (
                     <div className="space-y-4 text-gray-400">
                       <div className="text-[var(--theme-color)]">
-                        STREAK: [{'█'.repeat(Math.min(streak, 10)).padEnd(10, '░')}] {streak}d
+                        {`STREAK: [`}
+                        <span>{'█'.repeat(Math.min(streak, 10))}</span>
+                        <span className="opacity-30">{'█'.repeat(10 - Math.min(streak, 10))}</span>
+                        {`] ${streak}d`}
                         {streak === 0 && <span className="text-gray-600"> — complete a task to start one</span>}
                       </div>
 
