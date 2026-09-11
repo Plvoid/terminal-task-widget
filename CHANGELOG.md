@@ -11,6 +11,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Added
 
+- **Launching the app while it is already running brings the existing one forward** instead of
+  starting a second copy. Two copies shared one set of settings, so the newcomer could quietly
+  overwrite the hotkey the original was still using.
 - **`Restart UI` and `Restart App` in the tray menu.** If the widget's interface stops responding
   — which is what "the ball vanished and nothing brings it back" actually looks like — `Restart UI`
   reloads it in place and `Restart App` relaunches the whole thing. Neither loses any tasks.
@@ -24,8 +27,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   that same sleeping interface, so all of them were dead too; they now do the work themselves.
   And the one call used to bring the window back does nothing when Windows already believes the
   window is visible, which is exactly the case here — the app now re-asserts its always-on-top
-  position instead, and does so by itself the moment the machine wakes rather than waiting for you
-  to reach for the tray.
+  position instead. The tray items do this on demand; whether the widget also manages it unaided
+  after a long sleep is not yet established.
+- **The ball finds its way back after you drag it.** Dragging it partly off the edge of the screen
+  used to leave it stuck there — the widget stopped checking its own position the moment a drag
+  began and never started again, because Windows swallows the release event.
+- **Cancelling a half-typed Chinese word no longer disturbs the panel.** Pressing `Esc` to throw
+  away pinyin also reached the app, which cleared your row selection or closed the panel outright,
+  depending on what was selected — which is why it seemed to happen only sometimes.
+- **Recording a shortcut can no longer leave you without one.** If the panel closed while
+  `/shortcut` was waiting for a combination — which anything that steals focus will do — the
+  global hotkey stayed switched off with no sign of why.
+- **`Shift` on its own is no longer accepted as a modifier**, and combinations Windows and input
+  methods need for themselves are refused. `Shift+A` would have taken every capital A on the
+  machine.
+- **A hotkey held by another program no longer costs you your own binding.** The widget used to
+  give up and save the default over it; it now keeps your choice and tries again next time.
+- **Status messages fit.** Several were being cut off mid-word, the longest by more than half.
 - **Holding a key no longer runs away with your list.** With a backlog item selected, holding
   Backspace emptied the backlog one row per repeat, silently — and the very first press did it
   without any repeat at all, because a backlog row stayed selected while you typed. Typing now
@@ -39,9 +57,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - **Rebinding the hotkey can no longer leave you with no hotkey at all.** `/shortcut` used to
   accept combinations it could not actually register — it tore down the working binding first,
   failed, and saved the broken value, so every later launch failed the same way. It now refuses
-  unusable combinations up front and keeps the old binding, requires a modifier so a bare letter
-  cannot be taken from every other application, and repairs a binding that has stopped working by
-  falling back to `Alt+X`.
+  unusable combinations up front and keeps the old binding, requires `Ctrl` or `Alt` — `Shift`
+  alone does not count, or `Shift+A` would quietly claim every capital A on the machine — refuses
+  combinations Windows and input methods need for themselves, and repairs a binding that has
+  stopped working by falling back to `Alt+X`.
 - **A mistyped command is reported instead of becoming a task.** `/hlep` used to create a task
   called `/hlep`, even while the command menu was saying "command not found".
 - **Right-clicking the ball** no longer drags the window or opens the panel.
