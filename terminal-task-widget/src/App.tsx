@@ -3380,14 +3380,20 @@ export default function App() {
           </div>
 
           <div className="px-4 py-2 shrink-0 text-[var(--theme-color)] flex items-center justify-between gap-2">
-            <span className="shrink-0">
-              {`PROG: [`}
-              <span>{progBar.done}</span>
-              {/* 30%, not 25%: /25 was already found invisible on this panel
-                  once, when the nesting ancestry border was tuned. */}
-              <span className="opacity-30">{progBar.todo}</span>
-              {`] ${percent}%`}
-            </span>
+            {/* The notice owns this row while it exists. Sharing it with the
+                bar left the notice ~27 characters - a budget nothing enforced,
+                and /export's path was cut in half by it. Same move as dropping
+                the second progress glyph: remove the competition, not add a rule. */}
+            {!notice && (
+              <span className="shrink-0">
+                {`PROG: [`}
+                <span>{progBar.done}</span>
+                {/* 30%, not 25%: /25 was already found invisible on this panel
+                    once, when the nesting ancestry border was tuned. */}
+                <span className="opacity-30">{progBar.todo}</span>
+                {`] ${percent}%`}
+              </span>
+            )}
             {notice && (
               <span className={`text-[11px] truncate animate-modal-in ${notice.startsWith('[ERR]') ? 'text-[var(--accent-danger)]/90' : notice.startsWith('[!]') ? 'text-[var(--accent-edit)]/90' : 'text-[var(--accent-action)]/90'}`}>
                 {notice}
