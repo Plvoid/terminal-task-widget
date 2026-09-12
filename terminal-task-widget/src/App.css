@@ -141,7 +141,7 @@ html, body, #root {
 }
 .animate-panel-in {
   animation: panelIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
-  transform-origin: top left;
+  transform-origin: top right;
 }
 
 /* Panel close: quick ease-in fade, plays BEFORE the window resizes */
@@ -157,7 +157,7 @@ html, body, #root {
 }
 .animate-panel-out {
   animation: panelOut 0.15s cubic-bezier(0.4, 0, 1, 1) both;
-  transform-origin: top left;
+  transform-origin: top right;
 }
 
 /* Modal / inline hint entrance: short fade + rise */
