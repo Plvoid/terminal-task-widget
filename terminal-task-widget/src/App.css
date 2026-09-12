@@ -70,8 +70,6 @@ html, body, #root {
 }
 
 :root {
-  background-color: #000;
-
   /* Was a hardcoded `#00ff00`. This is not the colour of anything on screen —
      every text-bearing element sets its own — but it IS the value a freshly
      inserted element animates FROM.

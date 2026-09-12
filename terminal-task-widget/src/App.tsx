@@ -1834,13 +1834,6 @@ export default function App() {
         });
       } catch (e) {
         console.warn("Shortcut setup interrupted:", e);
-        // Self-heal. Without this a bad value persisted in geek-hotkey failed
-        // again on every single launch, so a restart did NOT recover the
-        // hotkey - the symptom that made this worth fixing. Falling back also
-        // rewrites geek-hotkey (via the persistence effect), so the failure
-        // does not repeat. Guarded against the obvious loop: if Alt+X is
-        // itself what failed, setHotkey('Alt+X') is a no-op and the effect
-        // does not re-run.
         // NO fallback here any more, deliberately. A malformed stored value is
         // now caught at load by HOTKEY_SHAPE, which leaves only the transient
         // case: somebody else currently holds the combo. Overwriting the user's
