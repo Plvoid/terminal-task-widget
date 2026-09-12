@@ -66,7 +66,8 @@ Four files carry the version number and must move together: `package.json`,
 - No absolute paths, local account names, or personal identifiers in tracked files — this
   repo is public and its history has already been rewritten once to remove them.
 - User-facing changes get a `CHANGELOG.md` entry; UX changes get a `USER_GUIDE.md` update.
-  `USER_GUIDE.pdf` is generated from the Markdown, never edited directly.
+  The guide is Markdown only — a generated PDF was tracked until 2026-09-12 and had gone a month
+  stale, still documenting a panel behaviour that was found never to have worked.
 
 ## Where the rest of the reasoning lives
 

@@ -43,7 +43,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   machine.
 - **A hotkey held by another program no longer costs you your own binding.** The widget used to
   give up and save the default over it; it now keeps your choice and tries again next time.
-- **Status messages fit.** Several were being cut off mid-word, the longest by more than half.
+- **Status messages fit.** They shared a line with the progress bar and got whatever was left of
+  it, so several were cut off mid-word — `/export` lost the file path that was the whole point of
+  the message. A message now has that line to itself for the few seconds it is up.
 - **Holding a key no longer runs away with your list.** With a backlog item selected, holding
   Backspace emptied the backlog one row per repeat, silently — and the very first press did it
   without any repeat at all, because a backlog row stayed selected while you typed. Typing now
@@ -63,6 +65,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   stopped working by falling back to `Alt+X`.
 - **A mistyped command is reported instead of becoming a task.** `/hlep` used to create a task
   called `/hlep`, even while the command menu was saying "command not found".
+- **The panel opens from the corner the ball is in**, instead of growing out of the corner
+  furthest from it.
 - **Right-clicking the ball** no longer drags the window or opens the panel.
 - **A corrupted setting no longer stops the app from starting.** One damaged value could prevent
   the whole interface from loading, which looked exactly like the ball having vanished.
@@ -71,7 +75,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - `Enter` on an empty editor cancels the edit, rather than doing nothing at all.
 - Warnings are amber now, instead of the colour used for confirmations.
 - Bold text uses the real bold weight instead of a synthesised one.
-- Several status messages were being cut off mid-word; the ones this release touches now fit.
+
+### Removed
+
+- **The PDF copy of the user guide.** It was generated once and then went a month stale, still
+  describing a panel behaviour that was later found never to have worked at all. The Markdown
+  guide is now the only copy.
 
 ---
 

@@ -56,7 +56,7 @@ Requires **WebView2 ≥ 111**.
 Full command list: `/deadline /theme /l /clear /shortcut /daily /log /export /startup /help /about`.
 Type `/` for the command menu — it completes as you type, and after a space it offers that
 command's values. Press `/help` in the app for the built-in manual, or read the full
-[user guide](USER_GUIDE.md) ([PDF](USER_GUIDE.pdf)). Recent changes are in the
+[user guide](USER_GUIDE.md). Recent changes are in the
 [changelog](CHANGELOG.md).
 
 ## Requirements
